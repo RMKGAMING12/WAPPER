@@ -414,4 +414,21 @@ test('extractMentionQuery, filterMentionCandidates, injectMentionIntoInput, and 
   );
 });
 
+test('infrastructure and architecture panel access is strictly restricted to whitelisted founder accounts', () => {
+  // Whitelisted founder emails must have authorization
+  assert.equal(isFounderEmail('mayankraj.mfp23@gmail.com'), true);
+  assert.equal(isFounderEmail('mayankraj.mfp26@gmail.com'), true);
+  assert.equal(isFounderEmail('mayankraj.mfp29@gmail.com'), true);
+  assert.equal(isFounderEmail('MAYANKRAJ.MFP23@GMAIL.COM'), true);
+
+  // Non-whitelisted accounts, guests, and impostors must be completely rejected
+  assert.equal(isFounderEmail(''), false);
+  assert.equal(isFounderEmail(undefined), false);
+  assert.equal(isFounderEmail(null), false);
+  assert.equal(isFounderEmail('guest@example.com'), false);
+  assert.equal(isFounderEmail('public_user@gmail.com'), false);
+  assert.equal(isFounderEmail('impostor@gmail.com'), false);
+  assert.equal(isFounderEmail('mayankraj.mfp99@gmail.com'), false);
+});
+
 

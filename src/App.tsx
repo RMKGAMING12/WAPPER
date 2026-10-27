@@ -1805,6 +1805,10 @@ export default function App() {
     return Array.from(map.values());
   }, [profiles, currentUser, isMuted, isDeafened, activeVoiceChannelId]);
 
+  const isCurrentUserFounder = useMemo(() => {
+    return isFounderEmail(currentUser?.email || auth.currentUser?.email);
+  }, [currentUser?.email]);
+
   const onlineMembers = allServerMembers.filter((m) => m.status !== 'offline');
   const offlineMembers = allServerMembers.filter((m) => m.status === 'offline');
 
@@ -2031,6 +2035,7 @@ export default function App() {
             onSelectDM={handleSelectDM}
             onCreateServer={handleCreateServer}
             onJoinServerByInvite={handleJoinServerByInvite}
+            isFounder={isCurrentUserFounder}
             onOpenChangelogModal={() => setShowChangelogModal(true)}
             onOpenArchitectureModal={() => setShowArchitectureModal(true)}
           />
@@ -2397,11 +2402,14 @@ export default function App() {
         onPostToChannel={handleSendMessage}
       />
 
-      {/* SQL Schema, PWA Manifest & WebRTC Mesh Inspector Modal */}
-      <ArchitectureModal
-        isOpen={showArchitectureModal}
-        onClose={() => setShowArchitectureModal(false)}
-      />
+      {/* Strictly Founder-Only Database, SQL Schema, PWA Manifest & Infrastructure Inspector */}
+      {isCurrentUserFounder && (
+        <ArchitectureModal
+          isOpen={showArchitectureModal}
+          currentUserEmail={currentUser?.email || auth.currentUser?.email}
+          onClose={() => setShowArchitectureModal(false)}
+        />
+      )}
     </div>
   );
 }

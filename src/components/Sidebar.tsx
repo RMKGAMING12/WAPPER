@@ -42,6 +42,7 @@ interface SidebarProps {
     serverName?: string;
     error?: string;
   }>;
+  isFounder?: boolean;
   onOpenChangelogModal: () => void;
   onOpenArchitectureModal: () => void;
 }
@@ -59,6 +60,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectDM,
   onCreateServer,
   onJoinServerByInvite,
+  isFounder = false,
   onOpenChangelogModal,
   onOpenArchitectureModal,
 }) => {
@@ -284,16 +286,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <Sparkles className="w-4 h-4" />
         </button>
 
-        {/* Inspect SQL Schema & PWA Specs Button */}
-        <button
-          type="button"
-          onClick={onOpenArchitectureModal}
-          aria-label="Inspect SQL Schema and PWA Architecture"
-          title="Inspect schema.sql, manifest.json & P2P Specs"
-          className="w-11 h-11 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-indigo-300 flex items-center justify-center transition-colors cursor-pointer"
-        >
-          <Database className="w-4 h-4" />
-        </button>
+        {/* Strictly Founder/Admin-Only Architectural & Developer Inspector Layer */}
+        {isFounder && (
+          <button
+            type="button"
+            onClick={onOpenArchitectureModal}
+            aria-label="Developer Architecture Panel"
+            title="Developer Architecture & Schema Inspector (Founders Only)"
+            className="w-11 h-11 rounded-2xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 flex items-center justify-center transition-colors cursor-pointer"
+          >
+            <Database className="w-4 h-4" />
+          </button>
+        )}
       </nav>
 
       {/* Create or Join Server Modal */}
