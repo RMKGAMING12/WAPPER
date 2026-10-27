@@ -26,12 +26,21 @@ import {
   ShieldCheck,
   Globe,
   CheckCircle2,
+  Crown,
 } from 'lucide-react';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import { InstallPrompt } from './components/InstallPrompt';
 import { Sidebar, ServerItem } from './components/Sidebar';
 import { ChannelList, VoiceChannelOccupant } from './components/ChannelList';
-import { ChatArea, ChatMessageItem, CustomEmojiItem } from './components/ChatArea';
+import {
+  ChatArea,
+  ChatMessageItem,
+  CustomEmojiItem,
+  SharedMiniPlayerState,
+} from './components/ChatArea';
+import { GifMediaItem } from './components/GifEmojiPicker';
+import { ServerSettingsModal } from './components/ServerSettingsModal';
+import { ChangelogModal } from './components/ChangelogModal';
 import { VoiceVideoGrid } from './components/VoiceVideoGrid';
 import { FriendsDashboard } from './components/FriendsDashboard';
 import { ProfileSettingsModal } from './components/ProfileSettingsModal';
@@ -44,9 +53,17 @@ import {
   ChannelItem,
   WapperProfile,
   HydratedFriendItem,
+  ServerRole,
+  MessageReplyMetadata,
+  BotEmbedPayload,
+  DEFAULT_SERVER_ROLES,
   filterHydratedFriendsByTab,
   parseInviteInput,
   sanitizeId,
+  executeSlashCommand,
+  getUserHighestRole,
+  hasServerPermission,
+  isFounderUser,
 } from './utils/chatLogic';
 import {
   listenToAuthChanges,
@@ -65,7 +82,12 @@ import {
   blockUser,
   unblockUser,
 } from './socialManager';
-import { persistMessageRecord } from './supabaseClient';
+import {
+  persistMessageRecord,
+  updateMessageReactionsInCloud,
+  updateMessageContentInCloud,
+  deleteMessageFromCloud,
+} from './supabaseClient';
 
 const STATUS_DOT_COLOR: Record<WapperProfile['status'], string> = {
   online: 'bg-emerald-500',
@@ -77,6 +99,7 @@ const STATUS_DOT_COLOR: Record<WapperProfile['status'], string> = {
 const LOCAL_SERVERS_KEY = 'wapper_servers_v2';
 const LOCAL_CHANNELS_KEY = 'wapper_channels_v2';
 const LOCAL_EMOJIS_KEY = 'wapper_emojis_v2';
+const LOCAL_FAVORITE_GIFS_KEY = 'wapper_favorite_gifs_v2';
 const LOCAL_MESSAGES_KEY = 'wapper_messages_v2';
 const PENDING_INVITE_SESSION_KEY = 'wapper_pending_invite_target';
 
@@ -88,6 +111,9 @@ const DEFAULT_COMMUNITY_SERVER: ServerItem = {
   inviteCode: 'wapper-hq',
   ownerId: 'system_wapper',
   memberIds: [],
+  roles: DEFAULT_SERVER_ROLES,
+  memberRoles: {},
+  customEmojis: [],
 };
 
 const DEFAULT_COMMUNITY_CHANNELS: ChannelItem[] = [
@@ -97,7 +123,7 @@ const DEFAULT_COMMUNITY_CHANNELS: ChannelItem[] = [
     name: 'general',
     type: 'text',
     category: 'Text Channels',
-    topic: 'General community discussion, markdown, custom emojis & GIFs',
+    topic: 'General community discussion, /youtube & /live bots, custom emojis & GIFs',
   },
   {
     id: 'chan_webrtc_dev',
@@ -127,7 +153,15 @@ function loadInitialServers(): ServerItem[] {
     if (raw) {
       const parsed = JSON.parse(raw) as ServerItem[];
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+        return parsed.map((s) => ({
+          ...s,
+          roles:
+            Array.isArray(s.roles) && s.roles.length > 0
+              ? s.roles
+              : DEFAULT_SERVER_ROLES,
+          memberRoles:
+            s.memberRoles && typeof s.memberRoles === 'object' ? s.memberRoles : {},
+        }));
       }
     }
   } catch {
@@ -181,6 +215,21 @@ function loadInitialEmojis(): CustomEmojiItem[] {
   return [];
 }
 
+function loadInitialFavoriteGifs(): GifMediaItem[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_FAVORITE_GIFS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as GifMediaItem[];
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore storage parse error
+  }
+  return [];
+}
+
 export default function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [currentUser, setCurrentUser] = useState<WapperProfile | null>(null);
@@ -199,11 +248,18 @@ export default function App() {
   const [profiles, setProfiles] = useState<WapperProfile[]>([]);
   const [friends, setFriends] = useState<HydratedFriendItem[]>([]);
   const [customEmojis, setCustomEmojis] = useState<CustomEmojiItem[]>(loadInitialEmojis);
+  const [favoriteGifs, setFavoriteGifs] = useState<GifMediaItem[]>(
+    loadInitialFavoriteGifs
+  );
   const [messagesByChannel, setMessagesByChannel] =
     useState<Record<string, ChatMessageItem[]>>(loadInitialMessages);
   const [voiceOccupantsByChannel, setVoiceOccupantsByChannel] = useState<
     Record<string, VoiceChannelOccupant[]>
   >({});
+
+  // Shared Watch Together Mini-Player State
+  const [sharedMiniPlayer, setSharedMiniPlayer] =
+    useState<SharedMiniPlayerState | null>(null);
 
   // Navigation State
   const [activeServerId, setActiveServerId] = useState<string>('srv_wapper_community');
@@ -217,6 +273,8 @@ export default function App() {
   // Modals, Popovers & Notifications
   const [showProfileSettingsModal, setShowProfileSettingsModal] = useState<boolean>(false);
   const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
+  const [showServerSettingsModal, setShowServerSettingsModal] = useState<boolean>(false);
+  const [showChangelogModal, setShowChangelogModal] = useState<boolean>(false);
   const [inspectedProfile, setInspectedProfile] = useState<WapperProfile | null>(null);
   const [showAIStudioModal, setShowAIStudioModal] = useState<boolean>(false);
   const [showArchitectureModal, setShowArchitectureModal] = useState<boolean>(false);
@@ -262,6 +320,14 @@ export default function App() {
     }
   }, [customEmojis]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_FAVORITE_GIFS_KEY, JSON.stringify(favoriteGifs));
+    } catch {
+      // Ignore quota errors
+    }
+  }, [favoriteGifs]);
+
   // Capture `?invite=SERVER_ID` from URL on initial page load (even before login)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -280,7 +346,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Helper to persist a server, its channels, and membership to Firestore when signed in
+  // Helper to persist a server, its roles/emojis, its channels, and membership to Firestore when signed in
   const syncServerAndMembershipToFirestore = useCallback(
     async (
       server: ServerItem,
@@ -299,19 +365,29 @@ export default function App() {
           await setDoc(serverRef, {
             id: cleanServerId,
             name: server.name.slice(0, 80),
-            description: (server.description || 'Community server on Wapper PWA.').slice(0, 300),
+            description: (
+              server.description || 'Community server on Wapper PWA.'
+            ).slice(0, 300),
             iconUrl: (server.iconUrl || '').slice(0, 500000),
             inviteCode: (server.inviteCode || cleanServerId).slice(0, 64),
             ownerId: fbUser.uid,
+            roles: (server.roles || DEFAULT_SERVER_ROLES).slice(0, 30),
+            memberRoles: server.memberRoles || {},
+            customEmojis: (server.customEmojis || []).slice(0, 100),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
         } else if (snap.data()?.ownerId === fbUser.uid) {
           await updateDoc(serverRef, {
             name: server.name.slice(0, 80),
-            description: (server.description || 'Community server on Wapper PWA.').slice(0, 300),
+            description: (
+              server.description || 'Community server on Wapper PWA.'
+            ).slice(0, 300),
             iconUrl: (server.iconUrl || '').slice(0, 500000),
             inviteCode: (server.inviteCode || cleanServerId).slice(0, 64),
+            roles: (server.roles || DEFAULT_SERVER_ROLES).slice(0, 30),
+            memberRoles: server.memberRoles || {},
+            customEmojis: (server.customEmojis || []).slice(0, 100),
             updatedAt: serverTimestamp(),
           });
         }
@@ -401,6 +477,11 @@ export default function App() {
               inviteCode: String(d.inviteCode || directSnap.id),
               ownerId: String(d.ownerId || currentUser.id),
               memberIds: [currentUser.id],
+              roles: Array.isArray(d.roles) ? (d.roles as ServerRole[]) : DEFAULT_SERVER_ROLES,
+              memberRoles:
+                d.memberRoles && typeof d.memberRoles === 'object'
+                  ? (d.memberRoles as Record<string, string[]>)
+                  : {},
             };
           } else {
             const byCodeQ = query(
@@ -421,6 +502,11 @@ export default function App() {
                 inviteCode: String(d.inviteCode || docSnap.id),
                 ownerId: String(d.ownerId || currentUser.id),
                 memberIds: [currentUser.id],
+                roles: Array.isArray(d.roles) ? (d.roles as ServerRole[]) : DEFAULT_SERVER_ROLES,
+                memberRoles:
+                  d.memberRoles && typeof d.memberRoles === 'object'
+                    ? (d.memberRoles as Record<string, string[]>)
+                    : {},
               };
             }
           }
@@ -446,9 +532,7 @@ export default function App() {
         }
       }
 
-      // 3. If the invite code/ID is a valid server identifier not yet in local state,
-      // hydrate the invited server with default #general and General Voice channels so
-      // cross-device invite links work immediately.
+      // 3. Hydrate invited server with default #general and General Voice channels if new
       if (!matchedServer) {
         const cleanServerId = sanitizeId(
           targetKey.startsWith('srv_') ? targetKey : `srv_${targetKey}`
@@ -467,6 +551,8 @@ export default function App() {
           inviteCode: targetLower.slice(0, 32),
           ownerId: currentUser.id,
           memberIds: [currentUser.id],
+          roles: DEFAULT_SERVER_ROLES,
+          memberRoles: {},
         };
       }
 
@@ -497,6 +583,8 @@ export default function App() {
 
       const updatedServer: ServerItem = {
         ...matchedServer,
+        roles: matchedServer.roles || DEFAULT_SERVER_ROLES,
+        memberRoles: matchedServer.memberRoles || {},
         memberIds: Array.from(
           new Set([...(matchedServer.memberIds || []), currentUser.id])
         ),
@@ -608,6 +696,11 @@ export default function App() {
               iconUrl: String(d.iconUrl || ''),
               inviteCode: String(d.inviteCode || docSnap.id),
               ownerId: String(d.ownerId || ''),
+              roles: Array.isArray(d.roles) ? (d.roles as ServerRole[]) : DEFAULT_SERVER_ROLES,
+              memberRoles:
+                d.memberRoles && typeof d.memberRoles === 'object'
+                  ? (d.memberRoles as Record<string, string[]>)
+                  : {},
             });
           });
           if (remoteServers.length > 0) {
@@ -808,6 +901,14 @@ export default function App() {
             attachmentAnalysis: d.attachmentAnalysis
               ? String(d.attachmentAnalysis)
               : undefined,
+            replyTo: d.replyTo ? (d.replyTo as MessageReplyMetadata) : undefined,
+            reactions: d.reactions
+              ? (d.reactions as Record<string, string[]>)
+              : undefined,
+            isBot: Boolean(d.isBot),
+            botName: d.botName ? String(d.botName) : undefined,
+            botEmbed: d.botEmbed ? (d.botEmbed as BotEmbedPayload) : undefined,
+            isEdited: Boolean(d.isEdited),
             createdAt: createdIso,
           });
         });
@@ -844,9 +945,90 @@ export default function App() {
     [servers, activeServerId]
   );
 
+  const activeServerRoles = useMemo(
+    () => activeServer?.roles || DEFAULT_SERVER_ROLES,
+    [activeServer]
+  );
+
+  const activeServerMemberRoles = useMemo(
+    () => activeServer?.memberRoles || {},
+    [activeServer]
+  );
+
   const activeChannel = useMemo(
     () => channels.find((c) => c.id === activeChannelId),
     [channels, activeChannelId]
+  );
+
+  // Evaluate Current User Permissions on the Active Server
+  const currentUserRoleIds = useMemo(
+    () => (currentUser ? activeServerMemberRoles[currentUser.id] || [] : []),
+    [currentUser, activeServerMemberRoles]
+  );
+
+  const currentUserHighestRole = useMemo(
+    () => getUserHighestRole(activeServerRoles, currentUserRoleIds),
+    [activeServerRoles, currentUserRoleIds]
+  );
+
+  const canManageChannels = useMemo(
+    () =>
+      hasServerPermission({
+        serverOwnerId: activeServer?.ownerId || 'system_wapper',
+        user: currentUser,
+        roles: activeServerRoles,
+        memberRoleIds: currentUserRoleIds,
+        permission: 'MANAGE_CHANNELS',
+      }) || activeServer?.ownerId === 'system_wapper',
+    [activeServer, currentUser, activeServerRoles, currentUserRoleIds]
+  );
+
+  const canManageRoles = useMemo(
+    () =>
+      hasServerPermission({
+        serverOwnerId: activeServer?.ownerId || 'system_wapper',
+        user: currentUser,
+        roles: activeServerRoles,
+        memberRoleIds: currentUserRoleIds,
+        permission: 'MANAGE_ROLES',
+      }) || activeServer?.ownerId === 'system_wapper',
+    [activeServer, currentUser, activeServerRoles, currentUserRoleIds]
+  );
+
+  const canManageEmojis = useMemo(
+    () =>
+      hasServerPermission({
+        serverOwnerId: activeServer?.ownerId || 'system_wapper',
+        user: currentUser,
+        roles: activeServerRoles,
+        memberRoleIds: currentUserRoleIds,
+        permission: 'MANAGE_EMOJIS',
+      }) || activeServer?.ownerId === 'system_wapper',
+    [activeServer, currentUser, activeServerRoles, currentUserRoleIds]
+  );
+
+  const canDeleteMessages = useMemo(
+    () =>
+      hasServerPermission({
+        serverOwnerId: activeServer?.ownerId || 'system_wapper',
+        user: currentUser,
+        roles: activeServerRoles,
+        memberRoleIds: currentUserRoleIds,
+        permission: 'DELETE_MESSAGES',
+      }) || activeServer?.ownerId === 'system_wapper',
+    [activeServer, currentUser, activeServerRoles, currentUserRoleIds]
+  );
+
+  const canKickMembers = useMemo(
+    () =>
+      hasServerPermission({
+        serverOwnerId: activeServer?.ownerId || 'system_wapper',
+        user: currentUser,
+        roles: activeServerRoles,
+        memberRoleIds: currentUserRoleIds,
+        permission: 'KICK_MEMBERS',
+      }) || activeServer?.ownerId === 'system_wapper',
+    [activeServer, currentUser, activeServerRoles, currentUserRoleIds]
   );
 
   // Real Accepted Friends as DM Peers
@@ -946,6 +1128,11 @@ export default function App() {
             .slice(0, 20) || serverId,
         ownerId: currentUser.id,
         memberIds: [currentUser.id],
+        roles: DEFAULT_SERVER_ROLES,
+        memberRoles: {
+          [currentUser.id]: ['role_founder_admin'],
+        },
+        customEmojis: [],
       };
 
       const initialChannels: ChannelItem[] = [
@@ -1026,14 +1213,83 @@ export default function App() {
     ]
   );
 
+  // Send Message OR Execute Built-in Wapper Slash Command (`/youtube`, `/live`, `/poll`, `/8ball`, `/roll`)
   const handleSendMessage = useCallback(
     (payload: {
       content: string;
       gifUrl?: string;
       attachmentUrl?: string;
       attachmentAnalysis?: string;
+      replyTo?: MessageReplyMetadata;
     }) => {
       if (!currentUser) return;
+
+      const slashOutcome = executeSlashCommand(payload.content, {
+        id: currentUser.id,
+        username: currentUser.username,
+      });
+
+      const effectiveRoleColor =
+        currentUserHighestRole?.color ||
+        currentUser.profileThemeColor ||
+        '#5865F2';
+
+      if (slashOutcome.isSlashCommand && !slashOutcome.error && slashOutcome.botEmbed) {
+        const botMsg: ChatMessageItem = {
+          id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          channelId: effectiveChannelId,
+          serverId: isDMMode ? 'srv_dm' : activeServerId,
+          authorId: currentUser.id,
+          authorName: slashOutcome.botName || 'Wapper Bot',
+          authorAvatar: '',
+          authorRoleColor: slashOutcome.botRoleColor || '#5865F2',
+          content: slashOutcome.content || payload.content,
+          replyTo: payload.replyTo,
+          reactions: slashOutcome.initialReactions || {},
+          isBot: true,
+          botName: slashOutcome.botName || 'Wapper Bot',
+          botEmbed: slashOutcome.botEmbed,
+          createdAt: new Date().toISOString(),
+        };
+
+        setMessagesByChannel((prev) => {
+          const list = prev[effectiveChannelId] || [];
+          return {
+            ...prev,
+            [effectiveChannelId]: [...list, botMsg],
+          };
+        });
+
+        socket?.emit('send-message', botMsg);
+
+        persistMessageRecord({
+          id: botMsg.id,
+          channelId: botMsg.channelId,
+          serverId: botMsg.serverId,
+          authorId: botMsg.authorId,
+          authorName: botMsg.authorName,
+          authorRoleColor: botMsg.authorRoleColor,
+          content: botMsg.content,
+          replyTo: botMsg.replyTo,
+          reactions: botMsg.reactions,
+          isBot: true,
+          botName: botMsg.botName,
+          botEmbed: botMsg.botEmbed,
+        }).catch(() => {});
+
+        // If `/live` was triggered, update the user's status badge to `🔴 LIVE`
+        if (slashOutcome.liveStatusUpdate) {
+          updateUserProfile(currentUser, {
+            isLive: true,
+            liveStreamUrl: slashOutcome.liveStatusUpdate.liveStreamUrl,
+            liveStreamTitle: slashOutcome.liveStatusUpdate.liveStreamTitle,
+          })
+            .then((updated) => setCurrentUser(updated))
+            .catch(() => {});
+        }
+        return;
+      }
+
       const newMsg: ChatMessageItem = {
         id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         channelId: effectiveChannelId,
@@ -1041,11 +1297,15 @@ export default function App() {
         authorId: currentUser.id,
         authorName: currentUser.username,
         authorAvatar: currentUser.avatarUrl,
-        authorRoleColor: currentUser.profileThemeColor || '#5865F2',
+        authorEmail: currentUser.email,
+        authorRoleColor: effectiveRoleColor,
+        authorIsLive: currentUser.isLive,
         content: payload.content,
         gifUrl: payload.gifUrl,
         attachmentUrl: payload.attachmentUrl,
         attachmentAnalysis: payload.attachmentAnalysis,
+        replyTo: payload.replyTo,
+        reactions: {},
         createdAt: new Date().toISOString(),
       };
 
@@ -1067,16 +1327,128 @@ export default function App() {
         authorId: newMsg.authorId,
         authorName: newMsg.authorName,
         authorAvatar: newMsg.authorAvatar,
+        authorRoleColor: newMsg.authorRoleColor,
         content: newMsg.content,
         gifUrl: newMsg.gifUrl,
         attachmentUrl: newMsg.attachmentUrl,
         attachmentAnalysis: newMsg.attachmentAnalysis,
-      }).catch((err) => {
-        console.warn('Cloud persistence skipped or failed:', err);
-      });
+        replyTo: newMsg.replyTo,
+      }).catch(() => {});
     },
-    [effectiveChannelId, isDMMode, activeServerId, currentUser, socket]
+    [
+      effectiveChannelId,
+      isDMMode,
+      activeServerId,
+      currentUser,
+      currentUserHighestRole,
+      socket,
+    ]
   );
+
+  // Toggle Real-Time Reaction on a Message
+  const handleToggleReaction = useCallback(
+    (messageId: string, reactionKey: string) => {
+      if (!currentUser) return;
+
+      let updatedReactionsForCloud: Record<string, string[]> | null = null;
+
+      setMessagesByChannel((prev) => {
+        const list = prev[effectiveChannelId] || [];
+        const nextList = list.map((msg) => {
+          if (msg.id !== messageId) return msg;
+          const currentMap = { ...(msg.reactions || {}) };
+          const currentUsers = currentMap[reactionKey] || [];
+          const hasReacted = currentUsers.includes(currentUser.id);
+          const nextUsers = hasReacted
+            ? currentUsers.filter((uid) => uid !== currentUser.id)
+            : [...currentUsers, currentUser.id];
+
+          if (nextUsers.length === 0) {
+            delete currentMap[reactionKey];
+          } else {
+            currentMap[reactionKey] = nextUsers;
+          }
+          updatedReactionsForCloud = currentMap;
+          return {
+            ...msg,
+            reactions: currentMap,
+          };
+        });
+        return {
+          ...prev,
+          [effectiveChannelId]: nextList,
+        };
+      });
+
+      if (updatedReactionsForCloud) {
+        updateMessageReactionsInCloud({
+          serverId: isDMMode ? 'srv_dm' : activeServerId,
+          channelId: effectiveChannelId,
+          messageId,
+          reactions: updatedReactionsForCloud,
+        }).catch(() => {});
+      }
+    },
+    [currentUser, effectiveChannelId, isDMMode, activeServerId]
+  );
+
+  // Edit Message Content
+  const handleEditMessage = useCallback(
+    (messageId: string, newContent: string) => {
+      if (!currentUser) return;
+      setMessagesByChannel((prev) => {
+        const list = prev[effectiveChannelId] || [];
+        return {
+          ...prev,
+          [effectiveChannelId]: list.map((m) =>
+            m.id === messageId
+              ? { ...m, content: newContent.slice(0, 4000), isEdited: true }
+              : m
+          ),
+        };
+      });
+
+      updateMessageContentInCloud({
+        serverId: isDMMode ? 'srv_dm' : activeServerId,
+        channelId: effectiveChannelId,
+        messageId,
+        content: newContent,
+      }).catch(() => {});
+    },
+    [currentUser, effectiveChannelId, isDMMode, activeServerId]
+  );
+
+  // Delete Message
+  const handleDeleteMessage = useCallback(
+    (messageId: string) => {
+      if (!currentUser) return;
+      setMessagesByChannel((prev) => {
+        const list = prev[effectiveChannelId] || [];
+        return {
+          ...prev,
+          [effectiveChannelId]: list.filter((m) => m.id !== messageId),
+        };
+      });
+
+      deleteMessageFromCloud({
+        serverId: isDMMode ? 'srv_dm' : activeServerId,
+        channelId: effectiveChannelId,
+        messageId,
+      }).catch(() => {});
+    },
+    [currentUser, effectiveChannelId, isDMMode, activeServerId]
+  );
+
+  // Toggle Starred / Favorite GIF
+  const handleToggleFavoriteGif = useCallback((gif: GifMediaItem) => {
+    setFavoriteGifs((prev) => {
+      const exists = prev.some((item) => item.url === gif.url);
+      if (exists) {
+        return prev.filter((item) => item.url !== gif.url);
+      }
+      return [gif, ...prev];
+    });
+  }, []);
 
   const handleTypingSignal = useCallback(
     (isTyping: boolean) => {
@@ -1106,6 +1478,77 @@ export default function App() {
       socket?.emit('create-emoji', emoji);
     },
     [activeServerId, currentUser, socket]
+  );
+
+  const handleDeleteCustomEmoji = useCallback((emojiId: string) => {
+    setCustomEmojis((prev) => prev.filter((e) => e.id !== emojiId));
+  }, []);
+
+  // Server Roles & Member Roles Management Handlers
+  const handleUpdateServerRoles = useCallback(
+    (nextRoles: ServerRole[]) => {
+      if (!activeServer || !currentUser) return;
+      const updatedServer: ServerItem = {
+        ...activeServer,
+        roles: nextRoles,
+      };
+      setServers((prev) =>
+        prev.map((s) => (s.id === updatedServer.id ? updatedServer : s))
+      );
+      const srvChans = channelsRef.current.filter(
+        (c) => c.serverId === updatedServer.id
+      );
+      syncServerAndMembershipToFirestore(
+        updatedServer,
+        srvChans,
+        currentUser
+      ).catch(() => {});
+    },
+    [activeServer, currentUser, syncServerAndMembershipToFirestore]
+  );
+
+  const handleUpdateMemberRoles = useCallback(
+    (userId: string, nextRoleIds: string[]) => {
+      if (!activeServer || !currentUser) return;
+      const nextMemberRoles = {
+        ...(activeServer.memberRoles || {}),
+        [userId]: nextRoleIds,
+      };
+      const updatedServer: ServerItem = {
+        ...activeServer,
+        memberRoles: nextMemberRoles,
+      };
+      setServers((prev) =>
+        prev.map((s) => (s.id === updatedServer.id ? updatedServer : s))
+      );
+      const srvChans = channelsRef.current.filter(
+        (c) => c.serverId === updatedServer.id
+      );
+      syncServerAndMembershipToFirestore(
+        updatedServer,
+        srvChans,
+        currentUser
+      ).catch(() => {});
+    },
+    [activeServer, currentUser, syncServerAndMembershipToFirestore]
+  );
+
+  const handleKickServerMember = useCallback(
+    (targetUserId: string) => {
+      if (!activeServer) return;
+      setProfiles((prev) => prev.filter((p) => p.id !== targetUserId));
+      setServers((prev) =>
+        prev.map((s) =>
+          s.id === activeServer.id
+            ? {
+                ...s,
+                memberIds: (s.memberIds || []).filter((id) => id !== targetUserId),
+              }
+            : s
+        )
+      );
+    },
+    [activeServer]
   );
 
   const handleToggleMute = useCallback(() => {
@@ -1508,6 +1951,7 @@ export default function App() {
             onSelectDM={handleSelectDM}
             onCreateServer={handleCreateServer}
             onJoinServerByInvite={handleJoinServerByInvite}
+            onOpenChangelogModal={() => setShowChangelogModal(true)}
             onOpenArchitectureModal={() => setShowArchitectureModal(true)}
           />
 
@@ -1528,6 +1972,7 @@ export default function App() {
             activeVoiceChannelId={activeVoiceChannelId}
             voiceOccupantsByChannel={voiceOccupantsByChannel}
             currentUser={currentUser}
+            canManageChannels={canManageChannels}
             isMuted={isMuted}
             isDeafened={isDeafened}
             hasVideo={hasVideo}
@@ -1536,6 +1981,7 @@ export default function App() {
             onSelectChannel={handleSelectChannel}
             onCreateChannel={handleCreateChannel}
             onOpenInviteModal={() => setShowInviteModal(true)}
+            onOpenServerSettings={() => setShowServerSettingsModal(true)}
             onToggleMute={handleToggleMute}
             onToggleDeafen={handleToggleDeafen}
             onChangeStatus={handleChangeStatus}
@@ -1625,12 +2071,23 @@ export default function App() {
             }
             isDMMode={isDMMode}
             serverId={activeServerId}
+            currentUserId={currentUser.id}
+            currentUsername={currentUser.username}
+            canDeleteMessages={canDeleteMessages}
+            canManageEmojis={canManageEmojis}
             messages={messagesByChannel[effectiveChannelId] || []}
             customEmojis={customEmojis}
+            favoriteGifs={favoriteGifs}
             typingUsers={typingByChannel[effectiveChannelId] || []}
             showMemberSidebar={showMemberSidebar}
+            sharedMiniPlayer={sharedMiniPlayer}
+            onUpdateSharedMiniPlayer={setSharedMiniPlayer}
             onToggleMemberSidebar={() => setShowMemberSidebar((prev) => !prev)}
             onSendMessage={handleSendMessage}
+            onToggleReaction={handleToggleReaction}
+            onEditMessage={handleEditMessage}
+            onDeleteMessage={handleDeleteMessage}
+            onToggleFavoriteGif={handleToggleFavoriteGif}
             onTypingSignal={handleTypingSignal}
             onCreateCustomEmoji={handleCreateCustomEmoji}
             onOpenAIStudioModal={() => setShowAIStudioModal(true)}
@@ -1657,9 +2114,19 @@ export default function App() {
                     .join('')
                     .slice(0, 2)
                     .toUpperCase();
+                  const memberRoleIds = activeServerMemberRoles[member.id] || [];
+                  const highestRole = getUserHighestRole(
+                    activeServerRoles,
+                    memberRoleIds
+                  );
+                  const memberIsFounder = isFounderUser(member);
+                  const nameColor =
+                    highestRole?.color || member.profileThemeColor || '#F8FAFC';
                   const statusTicker =
                     member.customStatusEmoji || member.customStatusText
                       ? `${member.customStatusEmoji} ${member.customStatusText}`.trim()
+                      : highestRole
+                      ? highestRole.name
                       : `#${member.discriminator}`;
 
                   return (
@@ -1673,7 +2140,7 @@ export default function App() {
                         <div
                           className="relative w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0 overflow-hidden"
                           style={{
-                            backgroundColor: member.profileThemeColor || '#5865F2',
+                            backgroundColor: nameColor,
                           }}
                         >
                           {member.avatarUrl ? (
@@ -1693,15 +2160,24 @@ export default function App() {
                           />
                         </div>
                         <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1 flex-wrap">
                             <span
                               className="text-xs font-semibold truncate"
-                              style={{
-                                color: member.profileThemeColor || '#F8FAFC',
-                              }}
+                              style={{ color: nameColor }}
                             >
                               {member.username}
                             </span>
+                            {memberIsFounder && (
+                              <Crown
+                                className="w-3 h-3 text-amber-400 shrink-0"
+                                title="👑 Founder & Dev"
+                              />
+                            )}
+                            {member.isLive && (
+                              <span className="px-1 py-0.2 rounded bg-rose-500/20 border border-rose-500/50 text-rose-300 text-[9px] font-bold animate-pulse">
+                                🔴 LIVE
+                              </span>
+                            )}
                           </div>
                           <div className="text-[11px] text-slate-400 truncate">
                             {statusTicker}
@@ -1763,6 +2239,32 @@ export default function App() {
         isOpen={showInviteModal}
         server={activeServer}
         onClose={() => setShowInviteModal(false)}
+      />
+
+      {/* Server Roles, Permissions, Member Assignments & Custom Emojis Modal */}
+      <ServerSettingsModal
+        isOpen={showServerSettingsModal}
+        server={activeServer}
+        currentUser={currentUser}
+        roles={activeServerRoles}
+        memberRoles={activeServerMemberRoles}
+        members={allServerMembers}
+        customEmojis={customEmojis}
+        canManageRoles={canManageRoles}
+        canManageEmojis={canManageEmojis}
+        canKickMembers={canKickMembers}
+        onClose={() => setShowServerSettingsModal(false)}
+        onUpdateRoles={handleUpdateServerRoles}
+        onUpdateMemberRoles={handleUpdateMemberRoles}
+        onKickMember={handleKickServerMember}
+        onCreateCustomEmoji={handleCreateCustomEmoji}
+        onDeleteCustomEmoji={handleDeleteCustomEmoji}
+      />
+
+      {/* What's New Changelog Modal (By Founder & Dev Mayank Raj) */}
+      <ChangelogModal
+        isOpen={showChangelogModal}
+        onClose={() => setShowChangelogModal(false)}
       />
 
       {/* Profile & Theme Customization Modal */}

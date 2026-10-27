@@ -19,10 +19,12 @@ test('Dirty Dozen Security Invariants in firestore.rules', () => {
   assert.match(rulesContent, /function isValidChannel/);
   assert.match(rulesContent, /function isValidMessage/);
 
-  // 4. AffectedKeys().hasOnly() enforced on updates
+  // 4. AffectedKeys().hasOnly() enforced on updates (including message reactions and edits)
   assert.match(rulesContent, /affectedKeys\(\)\.hasOnly\(\[\s*'username'/);
   assert.match(rulesContent, /affectedKeys\(\)\.hasOnly\(\['status', 'updatedAt'\]\)/);
   assert.match(rulesContent, /affectedKeys\(\)\.hasOnly\(\[\s*'name'/);
+  assert.match(rulesContent, /affectedKeys\(\)\.hasOnly\(\['reactions', 'updatedAt'\]\)/);
+  assert.match(rulesContent, /affectedKeys\(\)\.hasOnly\(\['content', 'isEdited', 'updatedAt'\]\)/);
 
   // 5. Temporal integrity (request.time)
   assert.match(rulesContent, /incoming\(\)\.createdAt == request\.time/);

@@ -13,12 +13,14 @@ import {
   Menu,
   ArrowUpRight,
   ArrowDownLeft,
+  Crown,
 } from 'lucide-react';
 import {
   FriendsTabType,
   HydratedFriendItem,
   WapperProfile,
   filterHydratedFriendsByTab,
+  isFounderUser,
 } from '../utils/chatLogic';
 
 interface FriendsDashboardProps {
@@ -432,13 +434,24 @@ export const FriendsDashboard: React.FC<FriendsDashboardProps> = ({
                       >
                         {renderAvatar(user)}
                         <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="text-sm font-semibold text-white truncate">
                               {user.username}
                             </span>
                             <span className="text-xs font-mono text-slate-400">
                               #{user.discriminator}
                             </span>
+                            {isFounderUser(user) && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/50 text-amber-300 text-[10px] font-bold">
+                                <Crown className="w-3 h-3 text-amber-400" />
+                                <span>👑 Founder &amp; Dev</span>
+                              </span>
+                            )}
+                            {user.isLive && (
+                              <span className="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/50 text-rose-300 text-[10px] font-bold animate-pulse">
+                                🔴 LIVE
+                              </span>
+                            )}
                           </div>
                           <div className="text-xs text-slate-400 truncate">
                             {user.customStatusEmoji || user.customStatusText
@@ -585,6 +598,17 @@ export const FriendsDashboard: React.FC<FriendsDashboardProps> = ({
                             <span className="text-xs font-mono text-slate-400">
                               #{profile.discriminator}
                             </span>
+                            {isFounderUser(profile) && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/50 text-amber-300 text-[10px] font-bold">
+                                <Crown className="w-3 h-3 text-amber-400" />
+                                <span>👑 Founder &amp; Dev</span>
+                              </span>
+                            )}
+                            {profile.isLive && (
+                              <span className="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/50 text-rose-300 text-[10px] font-bold animate-pulse">
+                                🔴 LIVE
+                              </span>
+                            )}
                             {relationshipStatus === 'pending_incoming' && (
                               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400">
                                 <ArrowDownLeft className="w-3 h-3" />

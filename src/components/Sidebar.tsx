@@ -7,8 +7,10 @@ import {
   X,
   Database,
   ArrowRight,
+  Sparkles,
 } from 'lucide-react';
-import { WapperProfile, parseInviteInput } from '../utils/chatLogic';
+import { ServerRole, WapperProfile, parseInviteInput } from '../utils/chatLogic';
+import type { CustomEmojiItem } from './ChatArea';
 
 export interface ServerItem {
   id: string;
@@ -18,6 +20,9 @@ export interface ServerItem {
   inviteCode: string;
   ownerId: string;
   memberIds?: string[];
+  roles?: ServerRole[];
+  memberRoles?: Record<string, string[]>;
+  customEmojis?: CustomEmojiItem[];
 }
 
 interface SidebarProps {
@@ -37,6 +42,7 @@ interface SidebarProps {
     serverName?: string;
     error?: string;
   }>;
+  onOpenChangelogModal: () => void;
   onOpenArchitectureModal: () => void;
 }
 
@@ -53,6 +59,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectDM,
   onCreateServer,
   onJoinServerByInvite,
+  onOpenChangelogModal,
   onOpenArchitectureModal,
 }) => {
   const [showServerModal, setShowServerModal] = useState(false);
@@ -266,6 +273,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <div className="w-8 h-[1px] bg-slate-800 my-1" />
 
+        {/* What's New Changelog Modal Button */}
+        <button
+          type="button"
+          onClick={onOpenChangelogModal}
+          aria-label="What's New Changelog"
+          title="What's New in Wapper v3.0 (By Mayank Raj)"
+          className="w-11 h-11 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-300 flex items-center justify-center transition-colors cursor-pointer"
+        >
+          <Sparkles className="w-4 h-4" />
+        </button>
+
         {/* Inspect SQL Schema & PWA Specs Button */}
         <button
           type="button"
@@ -341,7 +359,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {modalTab === 'create' ? (
               <form onSubmit={handleCreateSubmit} className="space-y-4">
                 <p className="text-xs text-slate-400">
-                  Your server is provisioned with #general text chat, a P2P WebRTC voice room, and a shareable invite link.
+                  Your server is provisioned with #general text chat, a P2P WebRTC voice room, custom roles, and a shareable invite link.
                 </p>
 
                 <div>

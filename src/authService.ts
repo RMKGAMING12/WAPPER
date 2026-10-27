@@ -127,6 +127,13 @@ async function persistProfileToCloud(profile: WapperProfile): Promise<void> {
       customStatusEmoji: profile.customStatusEmoji.slice(0, 32),
       profileThemeColor: normalizeHexColor(profile.profileThemeColor, '#5865F2'),
       status: profile.status,
+      ...(profile.isLive !== undefined ? { isLive: Boolean(profile.isLive) } : {}),
+      ...(profile.liveStreamUrl !== undefined
+        ? { liveStreamUrl: String(profile.liveStreamUrl).slice(0, 2048) }
+        : {}),
+      ...(profile.liveStreamTitle !== undefined
+        ? { liveStreamTitle: String(profile.liveStreamTitle).slice(0, 140) }
+        : {}),
       updatedAt: serverTimestamp(),
     };
     try {
@@ -166,6 +173,9 @@ export function mapFirestoreDocToProfile(
     customStatusEmoji: String(docData.customStatusEmoji || ''),
     profileThemeColor: String(docData.profileThemeColor || '#5865F2'),
     status: (docData.status as WapperProfile['status']) || 'online',
+    isLive: Boolean(docData.isLive),
+    liveStreamUrl: docData.liveStreamUrl ? String(docData.liveStreamUrl) : undefined,
+    liveStreamTitle: docData.liveStreamTitle ? String(docData.liveStreamTitle) : undefined,
     createdAt: nowIso,
     updatedAt: nowIso,
   };
@@ -453,6 +463,9 @@ export async function updateUserProfile(
     customStatusEmoji?: string;
     profileThemeColor?: string;
     status?: WapperProfile['status'];
+    isLive?: boolean;
+    liveStreamUrl?: string;
+    liveStreamTitle?: string;
   }
 ): Promise<WapperProfile> {
   const validation = sanitizeProfileUpdate(updates);
@@ -467,6 +480,9 @@ export async function updateUserProfile(
     username: nextUsername,
     uniqueTag: formatUniqueTag(nextUsername, currentProfile.discriminator),
     status: updates.status ?? currentProfile.status,
+    isLive: updates.isLive ?? currentProfile.isLive,
+    liveStreamUrl: updates.liveStreamUrl ?? currentProfile.liveStreamUrl,
+    liveStreamTitle: updates.liveStreamTitle ?? currentProfile.liveStreamTitle,
     updatedAt: new Date().toISOString(),
   };
 

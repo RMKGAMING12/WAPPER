@@ -10,6 +10,13 @@ import {
   filterHydratedFriendsByTab,
   buildServerInviteLink,
   parseInviteInput,
+  extractYouTubeVideoId,
+  filterSlashCommands,
+  executeSlashCommand,
+  isFounderUser,
+  getUserHighestRole,
+  hasServerPermission,
+  DEFAULT_SERVER_ROLES,
   HydratedFriendItem,
 } from './chatLogic';
 
@@ -190,3 +197,73 @@ test('buildServerInviteLink and parseInviteInput handle full URLs and short invi
   assert.equal(parsedEmpty.valid, false);
 });
 
+test('extractYouTubeVideoId supports watch?v=, youtu.be/, /live/, and search queries', () => {
+  assert.equal(
+    extractYouTubeVideoId('https://www.youtube.com/watch?v=dQw4w9WgXcQ').videoId,
+    'dQw4w9WgXcQ'
+  );
+  assert.equal(
+    extractYouTubeVideoId('https://youtu.be/jfKfPfyJRdk').videoId,
+    'jfKfPfyJRdk'
+  );
+  assert.equal(
+    extractYouTubeVideoId('https://www.youtube.com/live/4xDzrJKXOOY?feature=share').videoId,
+    '4xDzrJKXOOY'
+  );
+  const searchRes = extractYouTubeVideoId('synthwave coding radio');
+  assert.equal(searchRes.isSearchFallback, true);
+  assert.equal(searchRes.videoId.length, 11);
+});
+
+test('filterSlashCommands and executeSlashCommand handle /youtube, /live, /poll, /8ball, and /roll', () => {
+  assert.equal(filterSlashCommands('/yo').length, 1);
+  assert.equal(filterSlashCommands('/yo')[0].command, '/youtube');
+
+  const caller = { id: 'usr_1', username: 'Mayank Raj' };
+
+  const ytCmd = executeSlashCommand('/youtube https://youtu.be/dQw4w9WgXcQ', caller);
+  assert.equal(ytCmd.isSlashCommand, true);
+  assert.equal(ytCmd.botName, 'YouTube Music Bot');
+  assert.equal(ytCmd.botEmbed?.youtubeVideoId, 'dQw4w9WgXcQ');
+
+  const liveCmd = executeSlashCommand(
+    '/live https://www.youtube.com/watch?v=jfKfPfyJRdk Shipping Wapper Live',
+    caller
+  );
+  assert.equal(liveCmd.isSlashCommand, true);
+  assert.equal(liveCmd.botName, 'Wapper Streamer Bot');
+  assert.equal(liveCmd.liveStatusUpdate?.isLive, true);
+  assert.equal(liveCmd.liveStatusUpdate?.liveStreamTitle, 'Shipping Wapper Live');
+
+  const pollCmd = executeSlashCommand(
+    '/poll Best feature? | YouTube Bot | Live Streamer | Server Roles',
+    caller
+  );
+  assert.equal(pollCmd.isSlashCommand, true);
+  assert.equal(pollCmd.botEmbed?.pollOptions?.length, 3);
+  assert.deepEqual(Object.keys(pollCmd.initialReactions || {}), ['1️⃣', '2️⃣', '3️⃣']);
+
+  const rollCmd = executeSlashCommand('/roll 20', caller, 14);
+  assert.equal(rollCmd.isSlashCommand, true);
+  assert.equal(rollCmd.botEmbed?.embedType, 'roll');
+});
+
+test('isFounderUser and role permission helpers identify Mayank Raj and evaluate role hierarchy', () => {
+  assert.equal(isFounderUser({ username: 'Mayank raj' }), true);
+  assert.equal(isFounderUser({ email: 'mayankraj.mfp23@gmail.com' }), true);
+  assert.equal(isFounderUser({ username: 'RandomUser', email: 'user@example.com' }), false);
+
+  const highest = getUserHighestRole(DEFAULT_SERVER_ROLES, ['role_member', 'role_moderator']);
+  assert.equal(highest?.id, 'role_moderator');
+
+  assert.equal(
+    hasServerPermission({
+      serverOwnerId: 'owner_1',
+      user: { id: 'u2', username: 'ModUser' },
+      roles: DEFAULT_SERVER_ROLES,
+      memberRoleIds: ['role_moderator'],
+      permission: 'DELETE_MESSAGES',
+    }),
+    true
+  );
+});

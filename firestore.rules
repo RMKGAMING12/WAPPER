@@ -55,6 +55,9 @@ service cloud.firestore {
         'customStatusEmoji',
         'profileThemeColor',
         'status',
+        'isLive',
+        'liveStreamUrl',
+        'liveStreamTitle',
         'createdAt',
         'updatedAt'
       ]) &&
@@ -72,6 +75,9 @@ service cloud.firestore {
       data.profileThemeColor is string && data.profileThemeColor.size() >= 4 && data.profileThemeColor.size() <= 9 &&
       data.status is string && data.status.size() <= 16 &&
       (data.status == 'online' || data.status == 'idle' || data.status == 'dnd' || data.status == 'offline') &&
+      (!('isLive' in data) || data.isLive is bool) &&
+      (!('liveStreamUrl' in data) || (data.liveStreamUrl is string && data.liveStreamUrl.size() <= 2048)) &&
+      (!('liveStreamTitle' in data) || (data.liveStreamTitle is string && data.liveStreamTitle.size() <= 140)) &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp;
     }
@@ -104,6 +110,9 @@ service cloud.firestore {
           'iconUrl',
           'inviteCode',
           'ownerId',
+          'roles',
+          'memberRoles',
+          'customEmojis',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -112,6 +121,9 @@ service cloud.firestore {
         (!('description' in data) || (data.description is string && data.description.size() <= 300)) &&
         (!('iconUrl' in data) || (data.iconUrl is string && data.iconUrl.size() <= 500000)) &&
         (!('inviteCode' in data) || (data.inviteCode is string && data.inviteCode.size() <= 64)) &&
+        (!('roles' in data) || (data.roles is list && data.roles.size() <= 30)) &&
+        (!('memberRoles' in data) || (data.memberRoles is map && data.memberRoles.size() <= 100)) &&
+        (!('customEmojis' in data) || (data.customEmojis is list && data.customEmojis.size() <= 100)) &&
         isValidId(data.ownerId) &&
         data.ownerId == request.auth.uid &&
         data.createdAt is timestamp &&
@@ -168,20 +180,33 @@ service cloud.firestore {
           'gifUrl',
           'attachmentUrl',
           'attachmentAnalysis',
-          'createdAt'
+          'replyTo',
+          'reactions',
+          'isBot',
+          'botName',
+          'botEmbed',
+          'isEdited',
+          'createdAt',
+          'updatedAt'
         ]) &&
         isValidId(data.id) &&
         isValidId(data.channelId) &&
         isValidId(data.serverId) &&
         isValidId(data.authorId) &&
-        data.authorId == request.auth.uid &&
         data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 64 &&
         (!('authorAvatar' in data) || (data.authorAvatar is string && data.authorAvatar.size() <= 500000)) &&
         (!('authorRoleColor' in data) || (data.authorRoleColor is string && data.authorRoleColor.size() <= 16)) &&
         data.content is string && data.content.size() <= 4000 &&
-        (!('gifUrl' in data) || (data.gifUrl is string && data.gifUrl.size() <= 2048)) &&
+        (!('gifUrl' in data) || (data.gifUrl is string && data.gifUrl.size() <= 500000)) &&
         (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 600000)) &&
         (!('attachmentAnalysis' in data) || (data.attachmentAnalysis is string && data.attachmentAnalysis.size() <= 4000)) &&
+        (!('replyTo' in data) || (data.replyTo is map && data.replyTo.size() <= 10)) &&
+        (!('reactions' in data) || (data.reactions is map && data.reactions.size() <= 50)) &&
+        (!('isBot' in data) || data.isBot is bool) &&
+        (!('botName' in data) || (data.botName is string && data.botName.size() <= 64)) &&
+        (!('botEmbed' in data) || (data.botEmbed is map && data.botEmbed.size() <= 15)) &&
+        (!('isEdited' in data) || data.isEdited is bool) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp) &&
         data.createdAt is timestamp;
     }
 
@@ -217,6 +242,9 @@ service cloud.firestore {
             'customStatusEmoji',
             'profileThemeColor',
             'status',
+            'isLive',
+            'liveStreamUrl',
+            'liveStreamTitle',
             'updatedAt'
           ])
         );
@@ -280,6 +308,9 @@ service cloud.firestore {
           'description',
           'iconUrl',
           'inviteCode',
+          'roles',
+          'memberRoles',
+          'customEmojis',
           'updatedAt'
         ]);
 
@@ -341,11 +372,45 @@ service cloud.firestore {
             isValidId(channelId) &&
             isValidId(messageId) &&
             isValidMessage(incoming()) &&
+            incoming().authorId == request.auth.uid &&
             incoming().id == messageId &&
             incoming().channelId == channelId &&
             incoming().serverId == serverId &&
             incoming().createdAt == request.time &&
             exists(/databases/$(database)/documents/servers/$(serverId)/channels/$(channelId));
+
+          allow update: if isSignedIn() &&
+            isValidMessage(incoming()) &&
+            isValidId(serverId) &&
+            isValidId(channelId) &&
+            isValidId(messageId) &&
+            incoming().id == existing().id &&
+            incoming().channelId == existing().channelId &&
+            incoming().serverId == existing().serverId &&
+            incoming().authorId == existing().authorId &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            (
+              // Action 1: Any signed-in member toggling a reaction on a message
+              (
+                incoming().content == existing().content &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'updatedAt'])
+              ) ||
+              // Action 2: Message author editing message content
+              (
+                existing().authorId == request.auth.uid &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['content', 'isEdited', 'updatedAt'])
+              )
+            );
+
+          allow delete: if isSignedIn() &&
+            isValidId(serverId) &&
+            isValidId(channelId) &&
+            isValidId(messageId) &&
+            (
+              existing().authorId == request.auth.uid ||
+              get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid
+            );
         }
       }
     }

@@ -6,10 +6,14 @@ import {
   ShieldBan,
   Settings,
   Calendar,
+  Crown,
+  Radio,
+  ExternalLink,
 } from 'lucide-react';
 import {
   WapperProfile,
   normalizeHexColor,
+  isFounderUser,
 } from '../utils/chatLogic';
 
 interface UserProfilePopoverProps {
@@ -52,6 +56,7 @@ export const UserProfilePopover: React.FC<UserProfilePopoverProps> = ({
   if (!profile) return null;
 
   const isSelf = profile.id === currentUserId;
+  const profileIsFounder = isFounderUser(profile);
   const themeHex = normalizeHexColor(profile.profileThemeColor, '#5865F2');
   const bannerHex = normalizeHexColor(profile.bannerColor, '#5865F2');
   const initials = profile.username
@@ -212,12 +217,50 @@ export const UserProfilePopover: React.FC<UserProfilePopoverProps> = ({
           {/* Profile Info Body */}
           <div className="rounded-xl bg-[#090D16] border border-slate-800/90 p-3.5 space-y-3">
             <div>
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-base font-bold text-white truncate">{profile.username}</h3>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <h3 className="text-base font-bold text-white truncate">
+                    {profile.username}
+                  </h3>
+                  {profileIsFounder && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/50 text-amber-300 text-[10px] font-bold">
+                      <Crown className="w-3 h-3 text-amber-400" />
+                      <span>👑 Founder &amp; Dev</span>
+                    </span>
+                  )}
+                </div>
                 <span className="text-[11px] text-slate-400">{STATUS_LABEL[profile.status]}</span>
               </div>
               <p className="text-xs font-mono text-slate-400">{profile.uniqueTag}</p>
             </div>
+
+            {/* Live Broadcast Status Card */}
+            {profile.isLive && (
+              <div className="rounded-xl bg-rose-500/10 border border-rose-500/30 p-2.5 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-300 animate-pulse">
+                    <Radio className="w-3.5 h-3.5 text-rose-400" />
+                    <span>🔴 LIVE STREAMING NOW</span>
+                  </span>
+                  {profile.liveStreamUrl && (
+                    <a
+                      href={profile.liveStreamUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] text-sky-400 hover:underline"
+                    >
+                      <span>Watch</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+                {profile.liveStreamTitle && (
+                  <p className="text-xs font-semibold text-white truncate">
+                    {profile.liveStreamTitle}
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="border-t border-slate-800/80 pt-2.5 space-y-1">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
