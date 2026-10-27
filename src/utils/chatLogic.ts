@@ -402,3 +402,84 @@ export function groupChannelsByType(
     voiceChannels: serverChannels.filter((c) => c.type === 'voice'),
   };
 }
+
+/**
+ * Builds a shareable Wapper server invite URL in the format:
+ * `${origin}/?invite=${serverId}`
+ */
+export function buildServerInviteLink(origin: string, serverId: string): string {
+  const cleanOrigin = (origin || 'http://localhost:3000').replace(/\/+$/, '');
+  const cleanServerId = (serverId || '').trim();
+  return `${cleanOrigin}/?invite=${encodeURIComponent(cleanServerId)}`;
+}
+
+/**
+ * Parses a pasted server invite link (e.g. `https://wapper.app/?invite=srv_12345`)
+ * or a raw server ID / short invite code (e.g. `srv_12345` or `wapper-hq`).
+ */
+export function parseInviteInput(rawInput: string): {
+  valid: boolean;
+  inviteTarget: string;
+  error?: string;
+} {
+  const trimmed = (rawInput || '').trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      inviteTarget: '',
+      error: 'Please paste an invite link or enter a Server ID / Invite Code.',
+    };
+  }
+
+  // Check if input is a full URL or contains ?invite=
+  if (trimmed.includes('invite=')) {
+    try {
+      const urlObj = trimmed.startsWith('http')
+        ? new URL(trimmed)
+        : new URL(trimmed.startsWith('?') ? `http://localhost/${trimmed}` : `http://localhost/?${trimmed}`);
+      const inviteParam = (urlObj.searchParams.get('invite') || '').trim();
+      if (inviteParam && BLUEPRINT_LIMITS.ID_REGEX.test(inviteParam)) {
+        return {
+          valid: true,
+          inviteTarget: inviteParam.slice(0, BLUEPRINT_LIMITS.ID_MAX_LEN),
+        };
+      }
+    } catch {
+      const match = trimmed.match(/[?&]invite=([a-zA-Z0-9_-]+)/);
+      if (match && match[1]) {
+        return {
+          valid: true,
+          inviteTarget: match[1].slice(0, BLUEPRINT_LIMITS.ID_MAX_LEN),
+        };
+      }
+    }
+    return {
+      valid: false,
+      inviteTarget: '',
+      error: 'Invalid invite link format. Expected a link like https://.../?invite=SERVER_ID.',
+    };
+  }
+
+  // Otherwise treat as direct Server ID or short invite code
+  const cleanedCode = trimmed.replace(/^#/, '').trim();
+  if (cleanedCode.length < 2 || cleanedCode.length > BLUEPRINT_LIMITS.ID_MAX_LEN) {
+    return {
+      valid: false,
+      inviteTarget: cleanedCode,
+      error: 'Invite code or Server ID must be between 2 and 128 characters.',
+    };
+  }
+  if (!BLUEPRINT_LIMITS.ID_REGEX.test(cleanedCode)) {
+    return {
+      valid: false,
+      inviteTarget: cleanedCode,
+      error: 'Invite code or Server ID can only contain letters, numbers, hyphens, and underscores.',
+    };
+  }
+
+  return {
+    valid: true,
+    inviteTarget: cleanedCode,
+  };
+}
+

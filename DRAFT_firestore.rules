@@ -97,24 +97,58 @@ service cloud.firestore {
 
     function isValidServer(data) {
       return data.keys().hasAll(['id', 'name', 'ownerId', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'name', 'ownerId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id',
+          'name',
+          'description',
+          'iconUrl',
+          'inviteCode',
+          'ownerId',
+          'createdAt',
+          'updatedAt'
+        ]) &&
         isValidId(data.id) &&
         data.name is string && data.name.size() >= 2 && data.name.size() <= 80 &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 300)) &&
+        (!('iconUrl' in data) || (data.iconUrl is string && data.iconUrl.size() <= 500000)) &&
+        (!('inviteCode' in data) || (data.inviteCode is string && data.inviteCode.size() <= 64)) &&
         isValidId(data.ownerId) &&
         data.ownerId == request.auth.uid &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
 
+    function isValidServerMember(data) {
+      return data.keys().hasAll(['id', 'serverId', 'userId', 'username', 'joinedAt']) &&
+        data.keys().hasOnly(['id', 'serverId', 'userId', 'username', 'avatarUrl', 'joinedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.serverId) &&
+        isValidId(data.userId) &&
+        data.userId == request.auth.uid &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 32 &&
+        (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 500000)) &&
+        data.joinedAt is timestamp;
+    }
+
     function isValidChannel(data) {
       return data.keys().hasAll(['id', 'serverId', 'name', 'type', 'category', 'ownerId', 'createdAt']) &&
-        data.keys().hasOnly(['id', 'serverId', 'name', 'type', 'category', 'ownerId', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id',
+          'serverId',
+          'name',
+          'type',
+          'category',
+          'topic',
+          'ownerId',
+          'createdAt'
+        ]) &&
         isValidId(data.id) &&
         isValidId(data.serverId) &&
         data.name is string && data.name.size() >= 2 && data.name.size() <= 64 &&
         data.type is string && data.type.size() <= 16 &&
         (data.type == 'text' || data.type == 'voice') &&
         data.category is string && data.category.size() >= 1 && data.category.size() <= 48 &&
+        (!('topic' in data) || (data.topic is string && data.topic.size() <= 300)) &&
         isValidId(data.ownerId) &&
         data.ownerId == request.auth.uid &&
         data.createdAt is timestamp;
@@ -129,6 +163,7 @@ service cloud.firestore {
           'authorId',
           'authorName',
           'authorAvatar',
+          'authorRoleColor',
           'content',
           'gifUrl',
           'attachmentUrl',
@@ -142,6 +177,7 @@ service cloud.firestore {
         data.authorId == request.auth.uid &&
         data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 64 &&
         (!('authorAvatar' in data) || (data.authorAvatar is string && data.authorAvatar.size() <= 500000)) &&
+        (!('authorRoleColor' in data) || (data.authorRoleColor is string && data.authorRoleColor.size() <= 16)) &&
         data.content is string && data.content.size() <= 4000 &&
         (!('gifUrl' in data) || (data.gifUrl is string && data.gifUrl.size() <= 2048)) &&
         (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 600000)) &&
@@ -152,7 +188,7 @@ service cloud.firestore {
     // 1. Public User Profiles (/profiles/{userId}) - Non-PII public profile card
     match /profiles/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && (resource == null || existing().uid is string);
-      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.uid is string;
 
       allow create: if isSignedIn() &&
         isValidId(userId) &&
@@ -201,7 +237,7 @@ service cloud.firestore {
         incoming().id == friendshipId &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        exists(/databases/$(database)/documents/profiles/$(incoming().userId));
+        exists(/databases/$(database)/documents/profiles/$(request.auth.uid));
 
       allow update: if isSignedIn() &&
         isValidFriendRelationship(incoming()) &&
@@ -221,8 +257,8 @@ service cloud.firestore {
 
     // 3. Community Servers (/servers/{serverId})
     match /servers/{serverId} {
-      allow get: if isSignedIn() && isValidId(serverId) && existing().ownerId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(serverId) && (resource == null || existing().ownerId is string);
+      allow list: if isSignedIn() && resource.data.ownerId is string;
 
       allow create: if isSignedIn() &&
         isValidId(serverId) &&
@@ -239,17 +275,47 @@ service cloud.firestore {
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'updatedAt']);
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name',
+          'description',
+          'iconUrl',
+          'inviteCode',
+          'updatedAt'
+        ]);
+
+      // 3b. Server Members Subcollection (/servers/{serverId}/members/{memberId})
+      match /members/{memberId} {
+        allow get: if isSignedIn() &&
+          isValidId(serverId) &&
+          isValidId(memberId) &&
+          (resource == null || existing().serverId == serverId);
+
+        allow list: if isSignedIn() && resource.data.serverId == serverId;
+
+        allow create: if isSignedIn() &&
+          isValidId(serverId) &&
+          isValidId(memberId) &&
+          memberId == request.auth.uid &&
+          isValidServerMember(incoming()) &&
+          incoming().id == memberId &&
+          incoming().serverId == serverId &&
+          incoming().joinedAt == request.time &&
+          exists(/databases/$(database)/documents/servers/$(serverId));
+
+        allow delete: if isSignedIn() &&
+          isValidId(serverId) &&
+          isValidId(memberId) &&
+          existing().userId == request.auth.uid;
+      }
 
       // 4. Server Channels (/servers/{serverId}/channels/{channelId})
       match /channels/{channelId} {
         allow get: if isSignedIn() &&
           isValidId(serverId) &&
           isValidId(channelId) &&
-          existing().ownerId == request.auth.uid &&
-          get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid;
+          (resource == null || existing().serverId == serverId);
 
-        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.serverId == serverId;
 
         allow create: if isSignedIn() &&
           isValidId(serverId) &&
@@ -258,7 +324,7 @@ service cloud.firestore {
           incoming().id == channelId &&
           incoming().serverId == serverId &&
           incoming().createdAt == request.time &&
-          get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid;
+          exists(/databases/$(database)/documents/servers/$(serverId));
 
         // 5. Channel Messages (/servers/{serverId}/channels/{channelId}/messages/{messageId})
         match /messages/{messageId} {
@@ -266,10 +332,9 @@ service cloud.firestore {
             isValidId(serverId) &&
             isValidId(channelId) &&
             isValidId(messageId) &&
-            existing().authorId == request.auth.uid &&
-            get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid;
+            (resource == null || existing().channelId == channelId);
 
-          allow list: if isSignedIn() && resource.data.authorId == request.auth.uid;
+          allow list: if isSignedIn() && resource.data.channelId == channelId;
 
           allow create: if isSignedIn() &&
             isValidId(serverId) &&
@@ -280,8 +345,7 @@ service cloud.firestore {
             incoming().channelId == channelId &&
             incoming().serverId == serverId &&
             incoming().createdAt == request.time &&
-            exists(/databases/$(database)/documents/servers/$(serverId)/channels/$(channelId)) &&
-            get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid;
+            exists(/databases/$(database)/documents/servers/$(serverId)/channels/$(channelId));
         }
       }
     }

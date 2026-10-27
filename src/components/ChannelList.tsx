@@ -15,6 +15,7 @@ import {
   X,
   Radio,
   Users,
+  UserPlus,
   Settings,
 } from 'lucide-react';
 import {
@@ -59,6 +60,7 @@ interface ChannelListProps {
   isSpeaking: boolean;
   onSelectChannel: (channel: ChannelItem) => void;
   onCreateChannel: (name: string, type: 'text' | 'voice', category: string) => void;
+  onOpenInviteModal: () => void;
   onToggleMute: () => void;
   onToggleDeafen: () => void;
   onChangeStatus: (status: WapperProfile['status']) => void;
@@ -102,6 +104,7 @@ export const ChannelList: React.FC<ChannelListProps> = ({
   isSpeaking,
   onSelectChannel,
   onCreateChannel,
+  onOpenInviteModal,
   onToggleMute,
   onToggleDeafen,
   onChangeStatus,
@@ -172,17 +175,30 @@ export const ChannelList: React.FC<ChannelListProps> = ({
             </p>
           </div>
           {!isDMMode && serverId && (
-            <button
-              type="button"
-              onClick={() => openCreateChannelModal('text')}
-              aria-label="Add Channel"
-              title="Create Channel"
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={onOpenInviteModal}
+                aria-label="Invite People"
+                title="Invite People to Server"
+                className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/35 border border-indigo-500/30 text-indigo-300 hover:text-white text-[11px] font-semibold transition-colors cursor-pointer shrink-0"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Invite</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openCreateChannelModal('text')}
+                aria-label="Add Channel"
+                title="Create Channel"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            </div>
           )}
         </div>
+
 
         {/* Scrollable Channel / DM List */}
         <div className="flex-1 overflow-y-auto px-2.5 py-3 space-y-5">

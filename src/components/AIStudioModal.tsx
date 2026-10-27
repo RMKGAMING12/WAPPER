@@ -99,6 +99,11 @@ export const AIStudioModal: React.FC<AIStudioModalProps> = ({
           mimeType: sourceEditMime,
         }),
       });
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        setGenError('Gemini media server route is not enabled on this static deployment.');
+        return;
+      }
       const data = await response.json();
       if (!response.ok || data.error) {
         setGenError(data.error || 'Failed to generate image.');
@@ -131,6 +136,11 @@ export const AIStudioModal: React.FC<AIStudioModalProps> = ({
           prompt: analyzePrompt.trim(),
         }),
       });
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        setAnalyzeError('Gemini photo analysis route is not enabled on this static deployment.');
+        return;
+      }
       const data = await response.json();
       if (!response.ok || data.error) {
         setAnalyzeError(data.error || 'Failed to analyze photo.');

@@ -75,6 +75,45 @@ interface ChatAreaProps {
   onOpenMobileNav?: () => void;
 }
 
+const CURATED_SERVERLESS_GIFS: GifSearchResult[] = [
+  {
+    id: 'gif_rocket_launch',
+    title: 'Rocket Launch Ship It',
+    url: 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM3Z0c2d5c2V5b3B5/3o7abKhOpu0NwenH3O/giphy.gif',
+    previewUrl: 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM3Z0c2d5c2V5b3B5/3o7abKhOpu0NwenH3O/giphy.gif',
+  },
+  {
+    id: 'gif_coding_fast',
+    title: 'Coding Fast Hacker',
+    url: 'https://media.giphy.com/media/LmNwrBhejkK9EFP504/giphy.gif',
+    previewUrl: 'https://media.giphy.com/media/LmNwrBhejkK9EFP504/giphy.gif',
+  },
+  {
+    id: 'gif_high_five',
+    title: 'Team High Five Celebrate',
+    url: 'https://media.giphy.com/media/3oEjHV0z8S7WM4MwnK/giphy.gif',
+    previewUrl: 'https://media.giphy.com/media/3oEjHV0z8S7WM4MwnK/giphy.gif',
+  },
+  {
+    id: 'gif_mind_blown',
+    title: 'Mind Blown Galaxy',
+    url: 'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
+    previewUrl: 'https://media.giphy.com/media/xT0xeJpnrWC4XWblEk/giphy.gif',
+  },
+  {
+    id: 'gif_thumbs_up',
+    title: 'Approved Thumbs Up',
+    url: 'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif',
+    previewUrl: 'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif',
+  },
+  {
+    id: 'gif_party_vibe',
+    title: 'Party Vibe Celebration',
+    url: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
+    previewUrl: 'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
+  },
+];
+
 export const ChatArea: React.FC<ChatAreaProps> = ({
   channelId,
   channelName,
@@ -97,7 +136,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [searchFilter, setSearchFilter] = useState('');
   const [showGifPicker, setShowGifPicker] = useState(false);
   const [gifQuery, setGifQuery] = useState('');
-  const [gifResults, setGifResults] = useState<GifSearchResult[]>([]);
+  const [gifResults, setGifResults] = useState<GifSearchResult[]>(CURATED_SERVERLESS_GIFS);
   const [loadingGifs, setLoadingGifs] = useState(false);
 
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -123,20 +162,62 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, channelId]);
 
-  // Fetch live GIFs when GIF Picker opens or query updates
+  // Fetch live GIFs directly from Tenor public endpoint with serverless catalog fallback
   useEffect(() => {
     if (!showGifPicker) return;
     let cancelled = false;
     setLoadingGifs(true);
 
-    fetch(`/api/gifs?q=${encodeURIComponent(gifQuery)}`)
-      .then((res) => res.json())
+    const q = gifQuery.trim();
+    const tenorEndpoint = q
+      ? `https://g.tenor.com/v1/search?q=${encodeURIComponent(q)}&key=LIVDSRZULELA&limit=12`
+      : `https://g.tenor.com/v1/trending?key=LIVDSRZULELA&limit=12`;
+
+    fetch(tenorEndpoint)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Tenor fallback'))))
       .then((data) => {
-        if (!cancelled && Array.isArray(data.gifs)) {
-          setGifResults(data.gifs);
+        if (cancelled) return;
+        if (Array.isArray(data?.results) && data.results.length > 0) {
+          const mapped: GifSearchResult[] = data.results
+            .map((item: Record<string, unknown>, idx: number) => {
+              const mediaArr = item.media as Array<Record<string, { url?: string }>> | undefined;
+              const mediaObj = mediaArr && mediaArr[0];
+              const fullUrl = mediaObj?.gif?.url || mediaObj?.tinygif?.url || '';
+              const previewUrl = mediaObj?.tinygif?.url || fullUrl;
+              if (!fullUrl) return null;
+              return {
+                id: String(item.id || `tenor_${idx}`),
+                title: String(item.content_description || item.title || 'GIF'),
+                url: fullUrl,
+                previewUrl,
+              };
+            })
+            .filter((x: GifSearchResult | null): x is GifSearchResult => Boolean(x));
+          if (mapped.length > 0) {
+            setGifResults(mapped);
+            return;
+          }
         }
+        const filteredFallback = q
+          ? CURATED_SERVERLESS_GIFS.filter((g) =>
+              g.title.toLowerCase().includes(q.toLowerCase())
+            )
+          : CURATED_SERVERLESS_GIFS;
+        setGifResults(
+          filteredFallback.length > 0 ? filteredFallback : CURATED_SERVERLESS_GIFS
+        );
       })
-      .catch(() => {})
+      .catch(() => {
+        if (cancelled) return;
+        const filteredFallback = q
+          ? CURATED_SERVERLESS_GIFS.filter((g) =>
+              g.title.toLowerCase().includes(q.toLowerCase())
+            )
+          : CURATED_SERVERLESS_GIFS;
+        setGifResults(
+          filteredFallback.length > 0 ? filteredFallback : CURATED_SERVERLESS_GIFS
+        );
+      })
       .finally(() => {
         if (!cancelled) setLoadingGifs(false);
       });
@@ -145,6 +226,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       cancelled = true;
     };
   }, [showGifPicker, gifQuery]);
+
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value.slice(0, BLUEPRINT_LIMITS.MESSAGE_CONTENT_MAX_LEN);

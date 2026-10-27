@@ -3,9 +3,31 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { MicOff, VolumeX, Radio, X, Layers, ShieldCheck, Globe } from 'lucide-react';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+  serverTimestamp,
+} from 'firebase/firestore';
+import {
+  MicOff,
+  VolumeX,
+  Radio,
+  X,
+  Layers,
+  ShieldCheck,
+  Globe,
+  CheckCircle2,
+} from 'lucide-react';
+import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import { InstallPrompt } from './components/InstallPrompt';
 import { Sidebar, ServerItem } from './components/Sidebar';
 import { ChannelList, VoiceChannelOccupant } from './components/ChannelList';
@@ -14,6 +36,7 @@ import { VoiceVideoGrid } from './components/VoiceVideoGrid';
 import { FriendsDashboard } from './components/FriendsDashboard';
 import { ProfileSettingsModal } from './components/ProfileSettingsModal';
 import { UserProfilePopover } from './components/UserProfilePopover';
+import { InviteModal } from './components/InviteModal';
 import { AIStudioModal } from './components/AIStudioModal';
 import { ArchitectureModal } from './components/ArchitectureModal';
 import { useWebRTC } from './useWebRTC';
@@ -22,6 +45,8 @@ import {
   WapperProfile,
   HydratedFriendItem,
   filterHydratedFriendsByTab,
+  parseInviteInput,
+  sanitizeId,
 } from './utils/chatLogic';
 import {
   listenToAuthChanges,
@@ -29,9 +54,10 @@ import {
   signInWithGoogleIdentity,
   signOut,
   updateUserProfile,
+  subscribeToProfilesDirectory,
 } from './authService';
 import {
-  fetchHydratedFriends,
+  subscribeToFriends,
   sendFriendRequest,
   acceptFriendRequest,
   declineFriendRequest,
@@ -48,8 +74,111 @@ const STATUS_DOT_COLOR: Record<WapperProfile['status'], string> = {
   offline: 'bg-slate-500',
 };
 
+const LOCAL_SERVERS_KEY = 'wapper_servers_v2';
+const LOCAL_CHANNELS_KEY = 'wapper_channels_v2';
+const LOCAL_EMOJIS_KEY = 'wapper_emojis_v2';
+const LOCAL_MESSAGES_KEY = 'wapper_messages_v2';
+const PENDING_INVITE_SESSION_KEY = 'wapper_pending_invite_target';
+
+const DEFAULT_COMMUNITY_SERVER: ServerItem = {
+  id: 'srv_wapper_community',
+  name: 'Wapper Community',
+  description: 'Open-source 100% free P2P WebRTC & Real-Time Chat HQ',
+  iconUrl: '',
+  inviteCode: 'wapper-hq',
+  ownerId: 'system_wapper',
+  memberIds: [],
+};
+
+const DEFAULT_COMMUNITY_CHANNELS: ChannelItem[] = [
+  {
+    id: 'chan_general',
+    serverId: 'srv_wapper_community',
+    name: 'general',
+    type: 'text',
+    category: 'Text Channels',
+    topic: 'General community discussion, markdown, custom emojis & GIFs',
+  },
+  {
+    id: 'chan_webrtc_dev',
+    serverId: 'srv_wapper_community',
+    name: 'webrtc-engineering',
+    type: 'text',
+    category: 'Text Channels',
+    topic: 'Zero-cost P2P mesh architecture, Google STUN & PWA updates',
+  },
+  {
+    id: 'chan_voice_lounge',
+    serverId: 'srv_wapper_community',
+    name: 'General Voice Lounge',
+    type: 'voice',
+    category: 'Voice & Video P2P',
+    topic: 'Direct browser-to-browser P2P audio, HD camera & screen share',
+  },
+];
+
 function getDirectMessageChannelId(userA: string, userB: string): string {
   return `dm_${[userA, userB].sort().join('_')}`;
+}
+
+function loadInitialServers(): ServerItem[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_SERVERS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ServerItem[];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore storage parse error
+  }
+  return [DEFAULT_COMMUNITY_SERVER];
+}
+
+function loadInitialChannels(): ChannelItem[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_CHANNELS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ChannelItem[];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore storage parse error
+  }
+  return DEFAULT_COMMUNITY_CHANNELS;
+}
+
+function loadInitialMessages(): Record<string, ChatMessageItem[]> {
+  try {
+    const raw = localStorage.getItem(LOCAL_MESSAGES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, ChatMessageItem[]>;
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore storage parse error
+  }
+  return {};
+}
+
+function loadInitialEmojis(): CustomEmojiItem[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_EMOJIS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as CustomEmojiItem[];
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore storage parse error
+  }
+  return [];
 }
 
 export default function App() {
@@ -64,13 +193,14 @@ export default function App() {
   const [isMuted, setIsMuted] = useState(false);
   const [isDeafened, setIsDeafened] = useState(false);
 
-  // Core Real-Time Entities (Strictly Zero Hardcoded Dummy Data)
-  const [servers, setServers] = useState<ServerItem[]>([]);
-  const [channels, setChannels] = useState<ChannelItem[]>([]);
+  // Core Real-Time Entities (Persisted in Firestore + LocalStorage)
+  const [servers, setServers] = useState<ServerItem[]>(loadInitialServers);
+  const [channels, setChannels] = useState<ChannelItem[]>(loadInitialChannels);
   const [profiles, setProfiles] = useState<WapperProfile[]>([]);
   const [friends, setFriends] = useState<HydratedFriendItem[]>([]);
-  const [customEmojis, setCustomEmojis] = useState<CustomEmojiItem[]>([]);
-  const [messagesByChannel, setMessagesByChannel] = useState<Record<string, ChatMessageItem[]>>({});
+  const [customEmojis, setCustomEmojis] = useState<CustomEmojiItem[]>(loadInitialEmojis);
+  const [messagesByChannel, setMessagesByChannel] =
+    useState<Record<string, ChatMessageItem[]>>(loadInitialMessages);
   const [voiceOccupantsByChannel, setVoiceOccupantsByChannel] = useState<
     Record<string, VoiceChannelOccupant[]>
   >({});
@@ -84,14 +214,62 @@ export default function App() {
   const [showMemberSidebar, setShowMemberSidebar] = useState<boolean>(true);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState<boolean>(false);
 
-  // Modals & Popovers
+  // Modals, Popovers & Notifications
   const [showProfileSettingsModal, setShowProfileSettingsModal] = useState<boolean>(false);
+  const [showInviteModal, setShowInviteModal] = useState<boolean>(false);
   const [inspectedProfile, setInspectedProfile] = useState<WapperProfile | null>(null);
   const [showAIStudioModal, setShowAIStudioModal] = useState<boolean>(false);
   const [showArchitectureModal, setShowArchitectureModal] = useState<boolean>(false);
+  const [inviteJoinNotice, setInviteJoinNotice] = useState<string | null>(null);
 
   // Typing Indicators per Channel
   const [typingByChannel, setTypingByChannel] = useState<Record<string, string[]>>({});
+
+  const serversRef = useRef<ServerItem[]>(servers);
+  const channelsRef = useRef<ChannelItem[]>(channels);
+
+  useEffect(() => {
+    serversRef.current = servers;
+    try {
+      localStorage.setItem(LOCAL_SERVERS_KEY, JSON.stringify(servers));
+    } catch {
+      // Ignore quota errors
+    }
+  }, [servers]);
+
+  useEffect(() => {
+    channelsRef.current = channels;
+    try {
+      localStorage.setItem(LOCAL_CHANNELS_KEY, JSON.stringify(channels));
+    } catch {
+      // Ignore quota errors
+    }
+  }, [channels]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_MESSAGES_KEY, JSON.stringify(messagesByChannel));
+    } catch {
+      // Ignore quota errors
+    }
+  }, [messagesByChannel]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_EMOJIS_KEY, JSON.stringify(customEmojis));
+    } catch {
+      // Ignore quota errors
+    }
+  }, [customEmojis]);
+
+  // Capture `?invite=SERVER_ID` from URL on initial page load (even before login)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const rawInvite = params.get('invite');
+    if (rawInvite && rawInvite.trim()) {
+      sessionStorage.setItem(PENDING_INVITE_SESSION_KEY, rawInvite.trim());
+    }
+  }, []);
 
   // Subscribe to real-time authentication state
   useEffect(() => {
@@ -102,42 +280,366 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Load initial server state & connect Socket.io once authenticated
+  // Helper to persist a server, its channels, and membership to Firestore when signed in
+  const syncServerAndMembershipToFirestore = useCallback(
+    async (
+      server: ServerItem,
+      serverChannels: ChannelItem[],
+      memberProfile: WapperProfile
+    ) => {
+      const fbUser = auth.currentUser;
+      if (!fbUser || !fbUser.emailVerified) return;
+
+      const cleanServerId = sanitizeId(server.id);
+      const serverRef = doc(db, 'servers', cleanServerId);
+
+      try {
+        const snap = await getDoc(serverRef);
+        if (!snap.exists()) {
+          await setDoc(serverRef, {
+            id: cleanServerId,
+            name: server.name.slice(0, 80),
+            description: (server.description || 'Community server on Wapper PWA.').slice(0, 300),
+            iconUrl: (server.iconUrl || '').slice(0, 500000),
+            inviteCode: (server.inviteCode || cleanServerId).slice(0, 64),
+            ownerId: fbUser.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else if (snap.data()?.ownerId === fbUser.uid) {
+          await updateDoc(serverRef, {
+            name: server.name.slice(0, 80),
+            description: (server.description || 'Community server on Wapper PWA.').slice(0, 300),
+            iconUrl: (server.iconUrl || '').slice(0, 500000),
+            inviteCode: (server.inviteCode || cleanServerId).slice(0, 64),
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        // Record membership in `/servers/{serverId}/members/{userId}`
+        const memberRef = doc(db, 'servers', cleanServerId, 'members', fbUser.uid);
+        const memberSnap = await getDoc(memberRef);
+        if (!memberSnap.exists()) {
+          await setDoc(memberRef, {
+            id: fbUser.uid,
+            serverId: cleanServerId,
+            userId: fbUser.uid,
+            username: memberProfile.username.slice(0, 32),
+            avatarUrl: (memberProfile.avatarUrl || '').slice(0, 500000),
+            joinedAt: serverTimestamp(),
+          });
+        }
+
+        // Ensure default/initial channels exist in `/servers/{serverId}/channels/{channelId}`
+        for (const ch of serverChannels) {
+          if (ch.serverId !== server.id) continue;
+          const cleanChanId = sanitizeId(ch.id);
+          const chanRef = doc(db, 'servers', cleanServerId, 'channels', cleanChanId);
+          const chanSnap = await getDoc(chanRef);
+          if (!chanSnap.exists()) {
+            await setDoc(chanRef, {
+              id: cleanChanId,
+              serverId: cleanServerId,
+              name: ch.name.slice(0, 64),
+              type: ch.type,
+              category: ch.category.slice(0, 48),
+              topic: (ch.topic || '').slice(0, 300),
+              ownerId: fbUser.uid,
+              createdAt: serverTimestamp(),
+            });
+          }
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `servers/${cleanServerId}`);
+      }
+    },
+    []
+  );
+
+  /**
+   * Joins a server by invite link, Server ID, or short invite code (`?invite=SERVER_ID` or manual modal),
+   * adds the logged-in user to its members list, and switches the active view to that server.
+   */
+  const handleJoinServerByInvite = useCallback(
+    async (
+      rawInviteLinkOrCode: string
+    ): Promise<{ joined: boolean; serverName?: string; error?: string }> => {
+      if (!currentUser) {
+        return { joined: false, error: 'Please sign in first to join a server.' };
+      }
+
+      const parsed = parseInviteInput(rawInviteLinkOrCode);
+      if (!parsed.valid) {
+        return { joined: false, error: parsed.error || 'Invalid invite link or code.' };
+      }
+
+      const targetKey = parsed.inviteTarget;
+      const targetLower = targetKey.toLowerCase();
+
+      // 1. Check currently loaded servers by ID or inviteCode
+      let matchedServer = serversRef.current.find(
+        (s) =>
+          s.id.toLowerCase() === targetLower ||
+          (s.inviteCode && s.inviteCode.toLowerCase() === targetLower)
+      );
+
+      let matchedChannels: ChannelItem[] = [];
+
+      // 2. If not found locally, query Firestore `/servers` directly by doc ID or `inviteCode`
+      if (!matchedServer && auth.currentUser && auth.currentUser.emailVerified) {
+        try {
+          const directSnap = await getDoc(doc(db, 'servers', sanitizeId(targetKey)));
+          if (directSnap.exists()) {
+            const d = directSnap.data();
+            matchedServer = {
+              id: String(d.id || directSnap.id),
+              name: String(d.name || 'Invited Wapper Server'),
+              description: String(
+                d.description || 'Joined via Wapper Server Invite Link'
+              ),
+              iconUrl: String(d.iconUrl || ''),
+              inviteCode: String(d.inviteCode || directSnap.id),
+              ownerId: String(d.ownerId || currentUser.id),
+              memberIds: [currentUser.id],
+            };
+          } else {
+            const byCodeQ = query(
+              collection(db, 'servers'),
+              where('inviteCode', '==', targetLower)
+            );
+            const codeSnap = await getDocs(byCodeQ);
+            if (!codeSnap.empty) {
+              const docSnap = codeSnap.docs[0];
+              const d = docSnap.data();
+              matchedServer = {
+                id: String(d.id || docSnap.id),
+                name: String(d.name || 'Invited Wapper Server'),
+                description: String(
+                  d.description || 'Joined via Wapper Server Invite Link'
+                ),
+                iconUrl: String(d.iconUrl || ''),
+                inviteCode: String(d.inviteCode || docSnap.id),
+                ownerId: String(d.ownerId || currentUser.id),
+                memberIds: [currentUser.id],
+              };
+            }
+          }
+
+          if (matchedServer) {
+            const chanSnap = await getDocs(
+              collection(db, 'servers', matchedServer.id, 'channels')
+            );
+            chanSnap.forEach((cDoc) => {
+              const cd = cDoc.data();
+              matchedChannels.push({
+                id: String(cd.id || cDoc.id),
+                serverId: matchedServer!.id,
+                name: String(cd.name || 'general'),
+                type: cd.type === 'voice' ? 'voice' : 'text',
+                category: String(cd.category || 'Text Channels'),
+                topic: String(cd.topic || ''),
+              });
+            });
+          }
+        } catch {
+          // Continue to step 3 fallback
+        }
+      }
+
+      // 3. If the invite code/ID is a valid server identifier not yet in local state,
+      // hydrate the invited server with default #general and General Voice channels so
+      // cross-device invite links work immediately.
+      if (!matchedServer) {
+        const cleanServerId = sanitizeId(
+          targetKey.startsWith('srv_') ? targetKey : `srv_${targetKey}`
+        );
+        const readableName = targetKey
+          .replace(/^srv_/, '')
+          .replace(/[-_]+/g, ' ')
+          .replace(/\b\w/g, (c) => c.toUpperCase())
+          .slice(0, 50);
+
+        matchedServer = {
+          id: cleanServerId,
+          name: readableName || 'Invited Community Server',
+          description: 'Joined via Wapper Shareable Invite Link',
+          iconUrl: '',
+          inviteCode: targetLower.slice(0, 32),
+          ownerId: currentUser.id,
+          memberIds: [currentUser.id],
+        };
+      }
+
+      const existingServerChannels = channelsRef.current.filter(
+        (c) => c.serverId === matchedServer!.id
+      );
+
+      if (existingServerChannels.length === 0 && matchedChannels.length === 0) {
+        matchedChannels = [
+          {
+            id: sanitizeId(`chan_${matchedServer.id}_general`),
+            serverId: matchedServer.id,
+            name: 'general',
+            type: 'text',
+            category: 'Text Channels',
+            topic: `Welcome to ${matchedServer.name}!`,
+          },
+          {
+            id: sanitizeId(`chan_${matchedServer.id}_voice`),
+            serverId: matchedServer.id,
+            name: 'General Voice',
+            type: 'voice',
+            category: 'Voice & Video P2P',
+            topic: 'Direct browser-to-browser P2P voice & screen sharing.',
+          },
+        ];
+      }
+
+      const updatedServer: ServerItem = {
+        ...matchedServer,
+        memberIds: Array.from(
+          new Set([...(matchedServer.memberIds || []), currentUser.id])
+        ),
+      };
+
+      setServers((prev) => {
+        const exists = prev.some((s) => s.id === updatedServer.id);
+        if (exists) {
+          return prev.map((s) => (s.id === updatedServer.id ? updatedServer : s));
+        }
+        return [...prev, updatedServer];
+      });
+
+      if (matchedChannels.length > 0) {
+        setChannels((prev) => {
+          const existingIds = new Set(prev.map((c) => c.id));
+          const toAdd = matchedChannels.filter((c) => !existingIds.has(c.id));
+          return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+        });
+      }
+
+      const allServerChannels = [
+        ...existingServerChannels,
+        ...matchedChannels,
+      ];
+      const firstTextChannel =
+        allServerChannels.find((c) => c.type === 'text') || allServerChannels[0];
+
+      // Switch active view to the joined server
+      setIsDMMode(false);
+      setIsFriendsDashboardActive(false);
+      setActiveServerId(updatedServer.id);
+      if (firstTextChannel) {
+        setActiveChannelId(firstTextChannel.id);
+      }
+      setIsMobileNavOpen(false);
+      setInviteJoinNotice(`Joined "${updatedServer.name}" via server invite!`);
+
+      // Sync server & membership to Firestore
+      await syncServerAndMembershipToFirestore(
+        updatedServer,
+        allServerChannels,
+        currentUser
+      );
+
+      return { joined: true, serverName: updatedServer.name };
+    },
+    [currentUser, syncServerAndMembershipToFirestore]
+  );
+
+  // Auto-Join via `?invite=SERVER_ID` URL Parameter on page load and after login
   useEffect(() => {
     if (!currentUser) return;
 
-    fetch('/api/bootstrap')
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data.servers)) {
-          setServers(data.servers);
-          if (data.servers.length > 0 && !data.servers.some((s: ServerItem) => s.id === activeServerId)) {
-            setActiveServerId(data.servers[0].id);
+    const params = new URLSearchParams(window.location.search);
+    const urlInvite = params.get('invite');
+    const pendingInvite =
+      urlInvite || sessionStorage.getItem(PENDING_INVITE_SESSION_KEY);
+
+    if (!pendingInvite) return;
+
+    sessionStorage.removeItem(PENDING_INVITE_SESSION_KEY);
+
+    // Clean URL using window.history.replaceState (preserving any non-invite path)
+    params.delete('invite');
+    const remainingSearch = params.toString();
+    const cleanUrl = `${window.location.pathname}${
+      remainingSearch ? `?${remainingSearch}` : ''
+    }${window.location.hash || ''}`;
+    window.history.replaceState({}, document.title, cleanUrl);
+
+    handleJoinServerByInvite(pendingInvite).catch((err) => {
+      console.warn('Auto-join invite warning:', err);
+    });
+  }, [currentUser, handleJoinServerByInvite]);
+
+  // Serverless Firestore + Real-Time Subscriptions once authenticated
+  useEffect(() => {
+    if (!currentUser) return;
+
+    // 1. Subscribe to registered user profiles directory (Firestore + Local Registry)
+    const unsubProfiles = subscribeToProfilesDirectory((updatedProfiles) => {
+      setProfiles(updatedProfiles);
+    });
+
+    // 2. Subscribe to real-time Friends Social Graph (Firestore + Local Registry)
+    const unsubFriends = subscribeToFriends(currentUser.id, (updatedFriends) => {
+      setFriends(updatedFriends);
+    });
+
+    // 3. Sync default/existing servers with Firestore when signed in
+    let unsubServers: (() => void) | null = null;
+    if (auth.currentUser && auth.currentUser.emailVerified) {
+      for (const srv of serversRef.current) {
+        const srvChans = channelsRef.current.filter((c) => c.serverId === srv.id);
+        syncServerAndMembershipToFirestore(srv, srvChans, currentUser).catch(() => {});
+      }
+
+      unsubServers = onSnapshot(
+        collection(db, 'servers'),
+        (snap) => {
+          const remoteServers: ServerItem[] = [];
+          snap.forEach((docSnap) => {
+            const d = docSnap.data();
+            remoteServers.push({
+              id: String(d.id || docSnap.id),
+              name: String(d.name || 'Wapper Server'),
+              description: String(d.description || ''),
+              iconUrl: String(d.iconUrl || ''),
+              inviteCode: String(d.inviteCode || docSnap.id),
+              ownerId: String(d.ownerId || ''),
+            });
+          });
+          if (remoteServers.length > 0) {
+            setServers((prev) => {
+              const map = new Map<string, ServerItem>();
+              for (const s of prev) map.set(s.id, s);
+              for (const rs of remoteServers) {
+                const existing = map.get(rs.id);
+                map.set(rs.id, existing ? { ...existing, ...rs } : rs);
+              }
+              return Array.from(map.values());
+            });
           }
-        }
-        if (Array.isArray(data.channels)) setChannels(data.channels);
-        if (Array.isArray(data.profiles)) setProfiles(data.profiles);
-        if (Array.isArray(data.customEmojis)) setCustomEmojis(data.customEmojis);
-        if (data.messagesByChannel) setMessagesByChannel(data.messagesByChannel);
-        if (data.activeVoicePeers) setVoiceOccupantsByChannel(data.activeVoicePeers);
-      })
-      .catch((err) => {
-        console.error('Bootstrap fetch error:', err);
-      });
+        },
+        () => {}
+      );
+    }
 
-    fetchHydratedFriends(currentUser.id)
-      .then((list) => setFriends(list))
-      .catch((err) => console.warn('Initial friends fetch warning:', err));
-
+    // 4. Optional Socket.io signaling for P2P WebRTC when running with a signaling server
     const newSocket = io(window.location.origin, {
       transports: ['websocket', 'polling'],
+      reconnectionAttempts: 3,
     });
     setSocket(newSocket);
 
     return () => {
+      unsubProfiles();
+      unsubFriends();
+      unsubServers?.();
       newSocket.disconnect();
     };
-  }, [currentUser?.id]);
+  }, [currentUser?.id, syncServerAndMembershipToFirestore]);
 
   // WebRTC P2P Hook
   const {
@@ -174,31 +676,29 @@ export default function App() {
     });
 
     const handleProfilesUpdated = (updatedProfiles: WapperProfile[]) => {
-      setProfiles(updatedProfiles);
-      const selfUpdated = updatedProfiles.find((p) => p.id === currentUser.id);
-      if (selfUpdated) {
-        setCurrentUser((prev) => (prev ? { ...prev, ...selfUpdated } : selfUpdated));
-      }
-      setInspectedProfile((prev) => {
-        if (!prev) return null;
-        return updatedProfiles.find((p) => p.id === prev.id) || prev;
+      setProfiles((prev) => {
+        const map = new Map<string, WapperProfile>();
+        for (const p of prev) map.set(p.id, p);
+        for (const up of updatedProfiles) map.set(up.id, up);
+        return Array.from(map.values());
       });
-    };
-
-    const handleFriendsUpdated = () => {
-      fetchHydratedFriends(currentUser.id)
-        .then((list) => setFriends(list))
-        .catch(() => {});
     };
 
     const handleChannelHistory = (payload: {
       channelId: string;
       messages: ChatMessageItem[];
     }) => {
-      setMessagesByChannel((prev) => ({
-        ...prev,
-        [payload.channelId]: payload.messages,
-      }));
+      if (!Array.isArray(payload.messages) || payload.messages.length === 0) return;
+      setMessagesByChannel((prev) => {
+        const existing = prev[payload.channelId] || [];
+        const map = new Map<string, ChatMessageItem>();
+        for (const m of existing) map.set(m.id, m);
+        for (const m of payload.messages) map.set(m.id, m);
+        return {
+          ...prev,
+          [payload.channelId]: Array.from(map.values()),
+        };
+      });
     };
 
     const handleNewMessage = (msg: ChatMessageItem) => {
@@ -233,22 +733,6 @@ export default function App() {
       });
     };
 
-    const handleServersUpdated = (payload: {
-      servers: ServerItem[];
-      channels: ChannelItem[];
-    }) => {
-      setServers(payload.servers);
-      setChannels(payload.channels);
-    };
-
-    const handleChannelsUpdated = (updatedChannels: ChannelItem[]) => {
-      setChannels(updatedChannels);
-    };
-
-    const handleEmojisUpdated = (updatedEmojis: CustomEmojiItem[]) => {
-      setCustomEmojis(updatedEmojis);
-    };
-
     const handleVoiceRoomsOverview = (
       overview: Record<string, VoiceChannelOccupant[]>
     ) => {
@@ -256,24 +740,16 @@ export default function App() {
     };
 
     socket.on('profiles-updated', handleProfilesUpdated);
-    socket.on('friends-updated', handleFriendsUpdated);
     socket.on('channel-history', handleChannelHistory);
     socket.on('new-message', handleNewMessage);
     socket.on('typing-signal', handleTypingSignal);
-    socket.on('servers-updated', handleServersUpdated);
-    socket.on('channels-updated', handleChannelsUpdated);
-    socket.on('emojis-updated', handleEmojisUpdated);
     socket.on('voice-rooms-overview', handleVoiceRoomsOverview);
 
     return () => {
       socket.off('profiles-updated', handleProfilesUpdated);
-      socket.off('friends-updated', handleFriendsUpdated);
       socket.off('channel-history', handleChannelHistory);
       socket.off('new-message', handleNewMessage);
       socket.off('typing-signal', handleTypingSignal);
-      socket.off('servers-updated', handleServersUpdated);
-      socket.off('channels-updated', handleChannelsUpdated);
-      socket.off('emojis-updated', handleEmojisUpdated);
       socket.off('voice-rooms-overview', handleVoiceRoomsOverview);
     };
   }, [socket, currentUser, isMuted, isDeafened]);
@@ -286,14 +762,82 @@ export default function App() {
     return activeChannelId;
   }, [isDMMode, isFriendsDashboardActive, activeDMPeerId, activeChannelId, currentUser]);
 
-  // Emit `join-channel` when switching channels
+  // Subscribe to Firestore messages for the active channel when signed in
   useEffect(() => {
-    if (!socket || !effectiveChannelId || !currentUser) return;
-    socket.emit('join-channel', {
+    if (!currentUser || !effectiveChannelId) return;
+    socket?.emit('join-channel', {
       channelId: effectiveChannelId,
       userId: currentUser.id,
     });
-  }, [socket, effectiveChannelId, currentUser?.id]);
+
+    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+
+    const cleanServerId = sanitizeId(isDMMode ? 'srv_dm' : activeServerId);
+    const cleanChanId = sanitizeId(effectiveChannelId);
+    const msgsRef = collection(
+      db,
+      'servers',
+      cleanServerId,
+      'channels',
+      cleanChanId,
+      'messages'
+    );
+
+    const unsubMessages = onSnapshot(
+      msgsRef,
+      (snap) => {
+        if (snap.empty) return;
+        const remoteMsgs: ChatMessageItem[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data();
+          const createdIso =
+            d.createdAt && typeof d.createdAt.toDate === 'function'
+              ? d.createdAt.toDate().toISOString()
+              : new Date().toISOString();
+          remoteMsgs.push({
+            id: String(d.id || docSnap.id),
+            channelId: effectiveChannelId,
+            serverId: isDMMode ? 'srv_dm' : activeServerId,
+            authorId: String(d.authorId || ''),
+            authorName: String(d.authorName || 'WapperUser'),
+            authorAvatar: String(d.authorAvatar || ''),
+            authorRoleColor: String(d.authorRoleColor || '#5865F2'),
+            content: String(d.content || ''),
+            gifUrl: d.gifUrl ? String(d.gifUrl) : undefined,
+            attachmentUrl: d.attachmentUrl ? String(d.attachmentUrl) : undefined,
+            attachmentAnalysis: d.attachmentAnalysis
+              ? String(d.attachmentAnalysis)
+              : undefined,
+            createdAt: createdIso,
+          });
+        });
+
+        remoteMsgs.sort(
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        );
+
+        setMessagesByChannel((prev) => {
+          const existing = prev[effectiveChannelId] || [];
+          const map = new Map<string, ChatMessageItem>();
+          for (const m of existing) map.set(m.id, m);
+          for (const rm of remoteMsgs) map.set(rm.id, rm);
+          const merged = Array.from(map.values()).sort(
+            (a, b) =>
+              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+          return {
+            ...prev,
+            [effectiveChannelId]: merged,
+          };
+        });
+      },
+      () => {}
+    );
+
+    return () => {
+      unsubMessages();
+    };
+  }, [socket, effectiveChannelId, isDMMode, activeServerId, currentUser?.id]);
 
   const activeServer = useMemo(
     () => servers.find((s) => s.id === activeServerId) || servers[0],
@@ -341,7 +885,9 @@ export default function App() {
       setIsDMMode(false);
       setIsFriendsDashboardActive(false);
       setActiveServerId(serverId);
-      const firstChannel = channels.find((c) => c.serverId === serverId && c.type === 'text');
+      const firstChannel = channels.find(
+        (c) => c.serverId === serverId && c.type === 'text'
+      );
       if (firstChannel) {
         setActiveChannelId(firstChannel.id);
       }
@@ -356,12 +902,15 @@ export default function App() {
     setIsMobileNavOpen(false);
   }, []);
 
-  const handleOpenDirectMessageWithProfile = useCallback((peerProfile: WapperProfile) => {
-    setIsDMMode(true);
-    setIsFriendsDashboardActive(false);
-    setActiveDMPeerId(peerProfile.id);
-    setIsMobileNavOpen(false);
-  }, []);
+  const handleOpenDirectMessageWithProfile = useCallback(
+    (peerProfile: WapperProfile) => {
+      setIsDMMode(true);
+      setIsFriendsDashboardActive(false);
+      setActiveDMPeerId(peerProfile.id);
+      setIsMobileNavOpen(false);
+    },
+    []
+  );
 
   const handleSelectChannel = useCallback(
     (channel: ChannelItem) => {
@@ -388,8 +937,15 @@ export default function App() {
         name,
         description: description || 'Community server on Wapper PWA.',
         iconUrl: '',
-        inviteCode: name.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 20),
+        inviteCode:
+          name
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 20) || serverId,
         ownerId: currentUser.id,
+        memberIds: [currentUser.id],
       };
 
       const initialChannels: ChannelItem[] = [
@@ -419,8 +975,13 @@ export default function App() {
       setActiveChannelId(textChanId);
 
       socket?.emit('create-server', { server: newServer, initialChannels });
+      syncServerAndMembershipToFirestore(
+        newServer,
+        initialChannels,
+        currentUser
+      ).catch(() => {});
     },
-    [currentUser, socket]
+    [currentUser, socket, syncServerAndMembershipToFirestore]
   );
 
   const handleCreateChannel = useCallback(
@@ -442,11 +1003,27 @@ export default function App() {
       setActiveChannelId(newChan.id);
       setIsMobileNavOpen(false);
       socket?.emit('create-channel', newChan);
+
+      if (currentUser && activeServer) {
+        syncServerAndMembershipToFirestore(
+          activeServer,
+          [newChan],
+          currentUser
+        ).catch(() => {});
+      }
+
       if (type === 'voice') {
         joinVoiceChannel(newChan.id);
       }
     },
-    [activeServerId, socket, joinVoiceChannel]
+    [
+      activeServerId,
+      activeServer,
+      currentUser,
+      socket,
+      joinVoiceChannel,
+      syncServerAndMembershipToFirestore,
+    ]
   );
 
   const handleSendMessage = useCallback(
@@ -560,7 +1137,11 @@ export default function App() {
   const handleChangeStatus = useCallback(
     (status: WapperProfile['status']) => {
       if (!currentUser) return;
-      setCurrentUser((prev) => (prev ? { ...prev, status } : null));
+      updateUserProfile(currentUser, { status })
+        .then((updated) => setCurrentUser(updated))
+        .catch(() => {
+          setCurrentUser((prev) => (prev ? { ...prev, status } : null));
+        });
       socket?.emit('user-status-change', {
         userId: currentUser.id,
         status,
@@ -592,7 +1173,7 @@ export default function App() {
     [currentUser, socket, isMuted, isDeafened]
   );
 
-  // Social Graph Handlers
+  // Social Graph Handlers (100% Serverless Firestore + Local Registry)
   const handleSendFriendRequest = useCallback(
     async (targetTag: string): Promise<string> => {
       if (!currentUser) throw new Error('Please sign in first.');
@@ -856,7 +1437,7 @@ export default function App() {
             <div className="pt-4 border-t border-slate-800/80 grid grid-cols-2 gap-3 text-[11px] text-slate-400">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Zero Mock Users</span>
+                <span>Serverless Firestore Sync</span>
               </div>
               <div className="flex items-center gap-2">
                 <Globe className="w-4 h-4 text-indigo-400 shrink-0" />
@@ -873,6 +1454,27 @@ export default function App() {
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#0B0F17] text-slate-100">
       {/* Top PWA Standalone Installation Banner */}
       <InstallPrompt />
+
+      {/* Server Invite Joined Notification Banner */}
+      {inviteJoinNotice && (
+        <div
+          role="status"
+          className="bg-emerald-950/90 border-b border-emerald-500/30 px-4 py-2 flex items-center justify-between gap-3 text-xs text-emerald-200 shrink-0"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{inviteJoinNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setInviteJoinNotice(null)}
+            aria-label="Dismiss Invite Notice"
+            className="p-1 rounded hover:bg-emerald-900/60 text-emerald-300 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Main 4-Column Discord-Style Responsive Workspace */}
       <div className="flex-1 flex min-h-0 overflow-hidden relative">
@@ -905,6 +1507,7 @@ export default function App() {
             onSelectServer={handleSelectServer}
             onSelectDM={handleSelectDM}
             onCreateServer={handleCreateServer}
+            onJoinServerByInvite={handleJoinServerByInvite}
             onOpenArchitectureModal={() => setShowArchitectureModal(true)}
           />
 
@@ -932,6 +1535,7 @@ export default function App() {
             isSpeaking={isSpeaking}
             onSelectChannel={handleSelectChannel}
             onCreateChannel={handleCreateChannel}
+            onOpenInviteModal={() => setShowInviteModal(true)}
             onToggleMute={handleToggleMute}
             onToggleDeafen={handleToggleDeafen}
             onChangeStatus={handleChangeStatus}
@@ -1153,6 +1757,13 @@ export default function App() {
           </aside>
         )}
       </div>
+
+      {/* Server Invite Link & Sharing Modal */}
+      <InviteModal
+        isOpen={showInviteModal}
+        server={activeServer}
+        onClose={() => setShowInviteModal(false)}
+      />
 
       {/* Profile & Theme Customization Modal */}
       <ProfileSettingsModal

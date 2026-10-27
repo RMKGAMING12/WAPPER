@@ -3,10 +3,12 @@ import {
   Users,
   Plus,
   Compass,
+  Link2,
   X,
   Database,
+  ArrowRight,
 } from 'lucide-react';
-import { WapperProfile } from '../utils/chatLogic';
+import { WapperProfile, parseInviteInput } from '../utils/chatLogic';
 
 export interface ServerItem {
   id: string;
@@ -15,6 +17,7 @@ export interface ServerItem {
   iconUrl: string;
   inviteCode: string;
   ownerId: string;
+  memberIds?: string[];
 }
 
 interface SidebarProps {
@@ -29,6 +32,11 @@ interface SidebarProps {
   onSelectServer: (serverId: string) => void;
   onSelectDM: (peerId: string) => void;
   onCreateServer: (name: string, description: string) => void;
+  onJoinServerByInvite: (inviteLinkOrCode: string) => Promise<{
+    joined: boolean;
+    serverName?: string;
+    error?: string;
+  }>;
   onOpenArchitectureModal: () => void;
 }
 
@@ -44,11 +52,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectServer,
   onSelectDM,
   onCreateServer,
+  onJoinServerByInvite,
   onOpenArchitectureModal,
 }) => {
-  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showServerModal, setShowServerModal] = useState(false);
+  const [modalTab, setModalTab] = useState<'create' | 'join'>('create');
   const [newServerName, setNewServerName] = useState('');
   const [newServerDesc, setNewServerDesc] = useState('');
+  const [inviteInput, setInviteInput] = useState('');
+  const [joiningBusy, setJoiningBusy] = useState(false);
   const [formError, setFormError] = useState('');
 
   const handleCreateSubmit = (e: React.FormEvent) => {
@@ -62,7 +74,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setNewServerName('');
     setNewServerDesc('');
     setFormError('');
-    setShowCreateModal(false);
+    setShowServerModal(false);
+  };
+
+  const handleJoinSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = parseInviteInput(inviteInput);
+    if (!parsed.valid) {
+      setFormError(
+        parsed.error || 'Please enter a valid invite link or Server ID.'
+      );
+      return;
+    }
+
+    setJoiningBusy(true);
+    setFormError('');
+    try {
+      const result = await onJoinServerByInvite(parsed.inviteTarget);
+      if (!result.joined) {
+        setFormError(
+          result.error || 'Could not find a server matching that invite link or ID.'
+        );
+      } else {
+        setInviteInput('');
+        setFormError('');
+        setShowServerModal(false);
+      }
+    } catch (err: unknown) {
+      setFormError(
+        err instanceof Error ? err.message : 'Failed to join server.'
+      );
+    } finally {
+      setJoiningBusy(false);
+    }
   };
 
   const renderServerEmblem = (server: ServerItem, index: number) => {
@@ -204,15 +248,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             );
           })}
 
-          {/* Create Server Button */}
+          {/* Create or Join Server Button ("+") */}
           <button
             type="button"
             onClick={() => {
               setFormError('');
-              setShowCreateModal(true);
+              setModalTab('create');
+              setShowServerModal(true);
             }}
-            aria-label="Create Server"
-            title="Create a New Wapper Server"
+            aria-label="Create or Join Server"
+            title="Create or Join a Wapper Server"
             className="w-12 h-12 rounded-3xl hover:rounded-2xl bg-slate-900 hover:bg-emerald-600/20 border border-slate-800 hover:border-emerald-500/50 text-emerald-400 flex items-center justify-center transition-colors cursor-pointer"
           >
             <Plus className="w-5 h-5" />
@@ -233,98 +278,204 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </nav>
 
-      {/* Create Server Modal */}
-      {showCreateModal && (
+      {/* Create or Join Server Modal */}
+      {showServerModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="create-server-modal-title"
+          aria-labelledby="server-modal-title"
         >
-          <div className="w-full max-w-md rounded-xl bg-[#0F172A] border border-slate-800 p-6 shadow-2xl">
+          <div className="w-full max-w-md rounded-2xl bg-[#0F172A] border border-slate-800 p-6 shadow-2xl space-y-5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <Compass className="w-5 h-5 text-indigo-400" />
-                <h2 id="create-server-modal-title" className="text-base font-semibold text-white">
-                  Create a Wapper Server
+                <h2 id="server-modal-title" className="text-base font-semibold text-white">
+                  {modalTab === 'create' ? 'Create a Wapper Server' : 'Join a Server by Invite'}
                 </h2>
               </div>
               <button
                 type="button"
-                onClick={() => setShowCreateModal(false)}
-                aria-label="Close Create Server Modal"
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                onClick={() => setShowServerModal(false)}
+                aria-label="Close Server Modal"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="mt-2 text-xs text-slate-400">
-              Your server is provisioned with #general text chat and a P2P WebRTC voice room at $0 server cost.
-            </p>
+            {/* Mode Switcher: Create a Server OR Join a Server */}
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-950 border border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setModalTab('create');
+                  setFormError('');
+                }}
+                className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                  modalTab === 'create'
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Create a Server</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalTab('join');
+                  setFormError('');
+                }}
+                className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                  modalTab === 'join'
+                    ? 'bg-emerald-600 text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                <span>Join a Server</span>
+              </button>
+            </div>
 
-            <form onSubmit={handleCreateSubmit} className="mt-4 space-y-4">
-              <div>
-                <label
-                  htmlFor="server-name-input"
-                  className="block text-xs font-medium text-slate-300 mb-1.5"
-                >
-                  Server Name
-                </label>
-                <input
-                  id="server-name-input"
-                  type="text"
-                  value={newServerName}
-                  onChange={(e) => {
-                    setNewServerName(e.target.value);
-                    if (formError) setFormError('');
-                  }}
-                  placeholder="e.g. Indie Game Collective"
-                  maxLength={80}
-                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="server-desc-input"
-                  className="block text-xs font-medium text-slate-300 mb-1.5"
-                >
-                  Community Description
-                </label>
-                <input
-                  id="server-desc-input"
-                  type="text"
-                  value={newServerDesc}
-                  onChange={(e) => setNewServerDesc(e.target.value)}
-                  placeholder="Open-source collaboration, P2P voice & code reviews"
-                  maxLength={300}
-                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              {formError && (
-                <p role="alert" className="text-xs text-rose-400 font-medium">
-                  {formError}
+            {modalTab === 'create' ? (
+              <form onSubmit={handleCreateSubmit} className="space-y-4">
+                <p className="text-xs text-slate-400">
+                  Your server is provisioned with #general text chat, a P2P WebRTC voice room, and a shareable invite link.
                 </p>
-              )}
 
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="px-4 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition-colors cursor-pointer"
-                >
-                  Create Server
-                </button>
-              </div>
-            </form>
+                <div>
+                  <label
+                    htmlFor="server-name-input"
+                    className="block text-xs font-medium text-slate-300 mb-1.5"
+                  >
+                    Server Name
+                  </label>
+                  <input
+                    id="server-name-input"
+                    type="text"
+                    value={newServerName}
+                    onChange={(e) => {
+                      setNewServerName(e.target.value);
+                      if (formError) setFormError('');
+                    }}
+                    placeholder="e.g. Indie Game Collective"
+                    maxLength={80}
+                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="server-desc-input"
+                    className="block text-xs font-medium text-slate-300 mb-1.5"
+                  >
+                    Community Description
+                  </label>
+                  <input
+                    id="server-desc-input"
+                    type="text"
+                    value={newServerDesc}
+                    onChange={(e) => setNewServerDesc(e.target.value)}
+                    placeholder="Open-source collaboration, P2P voice & code reviews"
+                    maxLength={300}
+                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                {formError && (
+                  <p role="alert" className="text-xs text-rose-400 font-medium">
+                    {formError}
+                  </p>
+                )}
+
+                <div className="flex items-center justify-between gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModalTab('join');
+                      setFormError('');
+                    }}
+                    className="text-xs text-emerald-400 hover:underline cursor-pointer"
+                  >
+                    Have an invite link? Join instead
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowServerModal(false)}
+                      className="px-4 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition-colors cursor-pointer"
+                    >
+                      Create Server
+                    </button>
+                  </div>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleJoinSubmit} className="space-y-4">
+                <p className="text-xs text-slate-400">
+                  Enter an invite link or Server ID below to join an existing Wapper server.
+                </p>
+
+                <div>
+                  <label
+                    htmlFor="invite-code-or-link-input"
+                    className="block text-xs font-medium text-slate-300 mb-1.5"
+                  >
+                    Invite Link or Server ID
+                  </label>
+                  <input
+                    id="invite-code-or-link-input"
+                    type="text"
+                    value={inviteInput}
+                    onChange={(e) => {
+                      setInviteInput(e.target.value);
+                      if (formError) setFormError('');
+                    }}
+                    placeholder="https://.../?invite=srv_wapper_community or srv_12345"
+                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  />
+                  <p className="mt-1.5 text-[11px] text-slate-500">
+                    Examples: <code className="font-mono text-slate-300">srv_wapper_community</code>,{' '}
+                    <code className="font-mono text-slate-300">wapper-hq</code>, or{' '}
+                    <code className="font-mono text-slate-300">
+                      {typeof window !== 'undefined' ? window.location.origin : 'https://wapper.app'}
+                      /?invite=srv_...
+                    </code>
+                  </p>
+                </div>
+
+                {formError && (
+                  <p role="alert" className="text-xs text-rose-400 font-medium">
+                    {formError}
+                  </p>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowServerModal(false)}
+                    className="px-4 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={joiningBusy}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs font-semibold text-white transition-colors cursor-pointer"
+                  >
+                    <span>{joiningBusy ? 'Joining...' : 'Join Server'}</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

@@ -1,9 +1,9 @@
 /**
  * Wapper Authentication & Profile Customization Service (`authService.ts`)
- * Implements production-ready Google OAuth login (`signInWithGoogle`), session
- * sign-out (`signOut`), real-time auth state listeners (`listenToAuthChanges`),
- * and profile customization persistence across Supabase Auth/PostgreSQL,
- * Firebase Google Auth/Firestore, and the real-time Socket.io backend.
+ * 100% Serverless client-side implementation using Firebase Google Auth + Firestore
+ * (`doc`, `getDoc`, `getDocs`, `setDoc`, `updateDoc`, `collection`, `onSnapshot`, `serverTimestamp`)
+ * and Supabase Auth/PostgreSQL, with local storage & BroadcastChannel synchronization.
+ * Zero `/api/...` backend routes required — works natively on Vercel static deployments.
  */
 import {
   onAuthStateChanged,
@@ -12,8 +12,11 @@ import {
   User as FirebaseUser,
 } from 'firebase/auth';
 import {
+  collection,
   doc,
   getDoc,
+  getDocs,
+  onSnapshot,
   setDoc,
   updateDoc,
   serverTimestamp,
@@ -35,6 +38,13 @@ import {
 } from './utils/chatLogic';
 
 const LOCAL_SESSION_STORAGE_KEY = 'wapper_active_google_profile_v2';
+const LOCAL_PROFILES_REGISTRY_KEY = 'wapper_profiles_registry_v2';
+const SYNC_CHANNEL_NAME = 'wapper_serverless_sync_v2';
+
+const syncChannel =
+  typeof window !== 'undefined' && 'BroadcastChannel' in window
+    ? new BroadcastChannel(SYNC_CHANNEL_NAME)
+    : null;
 
 function generateFourDigitDiscriminator(seed: string): string {
   let hash = 0;
@@ -45,28 +55,41 @@ function generateFourDigitDiscriminator(seed: string): string {
   return String(num).padStart(4, '0');
 }
 
-export async function syncProfileWithBackend(profile: WapperProfile): Promise<WapperProfile> {
+export function getLocalProfilesRegistry(): Record<string, WapperProfile> {
   try {
-    const response = await fetch('/api/profiles/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(profile),
-    });
-    if (response.ok) {
-      const data = await response.json();
-      if (data?.profile) {
-        localStorage.setItem(LOCAL_SESSION_STORAGE_KEY, JSON.stringify(data.profile));
-        return data.profile as WapperProfile;
-      }
+    const raw = localStorage.getItem(LOCAL_PROFILES_REGISTRY_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, WapperProfile>;
     }
-  } catch (err) {
-    console.warn('Backend profile sync warning:', err);
+  } catch {
+    // Ignore malformed storage
   }
+  return {};
+}
+
+export function saveProfileToLocalRegistry(profile: WapperProfile): WapperProfile {
+  try {
+    const registry = getLocalProfilesRegistry();
+    registry[profile.id] = profile;
+    localStorage.setItem(LOCAL_PROFILES_REGISTRY_KEY, JSON.stringify(registry));
+    syncChannel?.postMessage({ type: 'PROFILE_UPDATED', profile });
+  } catch {
+    // Ignore quota errors
+  }
+  return profile;
+}
+
+export async function syncProfileWithBackend(profile: WapperProfile): Promise<WapperProfile> {
+  saveProfileToLocalRegistry(profile);
   localStorage.setItem(LOCAL_SESSION_STORAGE_KEY, JSON.stringify(profile));
   return profile;
 }
 
 async function persistProfileToCloud(profile: WapperProfile): Promise<void> {
+  saveProfileToLocalRegistry(profile);
+
   if (isSupabaseConfigured) {
     await supabase.from('profiles').upsert(
       {
@@ -123,6 +146,110 @@ async function persistProfileToCloud(profile: WapperProfile): Promise<void> {
   }
 }
 
+export function mapFirestoreDocToProfile(
+  docId: string,
+  docData: Record<string, unknown>
+): WapperProfile {
+  const nowIso = new Date().toISOString();
+  const username = String(docData.username || 'WapperUser');
+  const discriminator = String(docData.discriminator || '0001');
+  return {
+    id: String(docData.uid || docId),
+    username,
+    discriminator,
+    uniqueTag: String(docData.uniqueTag || formatUniqueTag(username, discriminator)),
+    avatarUrl: String(docData.avatarUrl || ''),
+    bannerUrl: String(docData.bannerUrl || ''),
+    bannerColor: String(docData.bannerColor || '#5865F2'),
+    bio: String(docData.bio || ''),
+    customStatusText: String(docData.customStatusText || ''),
+    customStatusEmoji: String(docData.customStatusEmoji || ''),
+    profileThemeColor: String(docData.profileThemeColor || '#5865F2'),
+    status: (docData.status as WapperProfile['status']) || 'online',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+}
+
+/**
+ * Real-time Firestore + Local Registry listener for all registered user profiles.
+ */
+export function subscribeToProfilesDirectory(
+  onUpdate: (profiles: WapperProfile[]) => void
+): () => void {
+  const emitMerged = (firestoreProfiles: WapperProfile[] = []) => {
+    const map = new Map<string, WapperProfile>();
+    const localReg = getLocalProfilesRegistry();
+    for (const p of Object.values(localReg)) {
+      if (p && p.id) map.set(p.id, p);
+    }
+    for (const fp of firestoreProfiles) {
+      if (fp && fp.id) {
+        map.set(fp.id, fp);
+        saveProfileToLocalRegistry(fp);
+      }
+    }
+    const storedSelf = getStoredSessionProfile();
+    if (storedSelf) {
+      map.set(storedSelf.id, storedSelf);
+    }
+    onUpdate(Array.from(map.values()));
+  };
+
+  emitMerged();
+
+  let unsubFirestore: (() => void) | null = null;
+  if (auth.currentUser && auth.currentUser.emailVerified) {
+    unsubFirestore = onSnapshot(
+      collection(db, 'profiles'),
+      (snap) => {
+        const list: WapperProfile[] = [];
+        snap.forEach((docSnap) => {
+          list.push(
+            mapFirestoreDocToProfile(
+              docSnap.id,
+              docSnap.data() as Record<string, unknown>
+            )
+          );
+        });
+        emitMerged(list);
+      },
+      () => {
+        emitMerged();
+      }
+    );
+  } else {
+    getDocs(collection(db, 'profiles'))
+      .then((snap) => {
+        const list: WapperProfile[] = [];
+        snap.forEach((docSnap) => {
+          list.push(
+            mapFirestoreDocToProfile(
+              docSnap.id,
+              docSnap.data() as Record<string, unknown>
+            )
+          );
+        });
+        emitMerged(list);
+      })
+      .catch(() => {
+        emitMerged();
+      });
+  }
+
+  const handleBroadcast = (event: MessageEvent) => {
+    if (event.data?.type === 'PROFILE_UPDATED') {
+      emitMerged();
+    }
+  };
+  syncChannel?.addEventListener('message', handleBroadcast);
+
+  return () => {
+    unsubFirestore?.();
+    syncChannel?.removeEventListener('message', handleBroadcast);
+  };
+}
+
 /**
  * Initiates single-click Google OAuth login using Supabase Auth Provider (when
  * configured with Supabase project URL) and Firebase Google OAuth popup.
@@ -166,23 +293,16 @@ export async function signInWithGoogleIdentity(identity: {
   const discriminator = generateFourDigitDiscriminator(cleanEmail);
   const nowIso = new Date().toISOString();
 
-  // Check if backend already has a saved profile for this user ID
-  try {
-    const existingRes = await fetch(`/api/profiles/${encodeURIComponent(userId)}`);
-    if (existingRes.ok) {
-      const existingData = await existingRes.json();
-      if (existingData?.profile) {
-        const synced = await syncProfileWithBackend({
-          ...existingData.profile,
-          status: 'online',
-          updatedAt: nowIso,
-        });
-        notifyAuthListeners(synced);
-        return synced;
-      }
-    }
-  } catch {
-    // Proceed to create fresh profile
+  const existingLocal = getLocalProfilesRegistry()[userId];
+  if (existingLocal) {
+    const updatedExisting: WapperProfile = {
+      ...existingLocal,
+      status: 'online',
+      updatedAt: nowIso,
+    };
+    const synced = await syncProfileWithBackend(updatedExisting);
+    notifyAuthListeners(synced);
+    return synced;
   }
 
   const newProfile: WapperProfile = {
@@ -206,6 +326,7 @@ export async function signInWithGoogleIdentity(identity: {
     updatedAt: nowIso,
   };
 
+  await persistProfileToCloud(newProfile);
   const synced = await syncProfileWithBackend(newProfile);
   notifyAuthListeners(synced);
   return synced;
@@ -227,27 +348,6 @@ async function buildAndSyncProfileFromFirebaseUser(
   const discriminator = generateFourDigitDiscriminator(fbUser.uid);
   const nowIso = new Date().toISOString();
 
-  // Check if profile already exists in backend or Firestore
-  try {
-    const res = await fetch(`/api/profiles/${encodeURIComponent(cleanId)}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.profile) {
-        const merged: WapperProfile = {
-          ...data.profile,
-          avatarUrl: data.profile.avatarUrl || fbUser.photoURL || '',
-          email: fbUser.email || data.profile.email,
-          status: 'online',
-          updatedAt: nowIso,
-        };
-        await persistProfileToCloud(merged);
-        return await syncProfileWithBackend(merged);
-      }
-    }
-  } catch {
-    // Continue to Firestore check
-  }
-
   if (fbUser.emailVerified) {
     try {
       const snap = await getDoc(doc(db, 'profiles', cleanId));
@@ -259,7 +359,10 @@ async function buildAndSyncProfileFromFirebaseUser(
           discriminator: docData.discriminator || discriminator,
           uniqueTag:
             docData.uniqueTag ||
-            formatUniqueTag(docData.username || username, docData.discriminator || discriminator),
+            formatUniqueTag(
+              docData.username || username,
+              docData.discriminator || discriminator
+            ),
           email: fbUser.email || undefined,
           avatarUrl: docData.avatarUrl || fbUser.photoURL || '',
           bannerUrl: docData.bannerUrl || '',
@@ -272,11 +375,25 @@ async function buildAndSyncProfileFromFirebaseUser(
           createdAt: nowIso,
           updatedAt: nowIso,
         };
+        await persistProfileToCloud(existingProfile);
         return await syncProfileWithBackend(existingProfile);
       }
     } catch {
       // Fallback to creating new profile document
     }
+  }
+
+  const localExisting = getLocalProfilesRegistry()[cleanId];
+  if (localExisting) {
+    const merged: WapperProfile = {
+      ...localExisting,
+      avatarUrl: localExisting.avatarUrl || fbUser.photoURL || '',
+      email: fbUser.email || localExisting.email,
+      status: 'online',
+      updatedAt: nowIso,
+    };
+    await persistProfileToCloud(merged);
+    return await syncProfileWithBackend(merged);
   }
 
   const freshProfile: WapperProfile = {
@@ -307,15 +424,8 @@ async function buildAndSyncProfileFromFirebaseUser(
 export async function signOut(): Promise<void> {
   const stored = getStoredSessionProfile();
   if (stored) {
-    try {
-      await fetch('/api/profiles/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...stored, status: 'offline' }),
-      });
-    } catch {
-      // Ignore network errors during sign-out
-    }
+    const offlineProfile: WapperProfile = { ...stored, status: 'offline' };
+    await persistProfileToCloud(offlineProfile).catch(() => {});
   }
 
   localStorage.removeItem(LOCAL_SESSION_STORAGE_KEY);
@@ -456,7 +566,6 @@ export function listenToAuthChanges(
 ): () => void {
   authListeners.add(callback);
 
-  // Check URL for automated verification query params (?test=1 or ?autostart=1)
   const params = new URLSearchParams(window.location.search);
   const isAutomatedTest = params.get('test') === '1' || params.get('autostart') === '1';
 

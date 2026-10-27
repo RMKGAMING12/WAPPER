@@ -8,6 +8,8 @@ import {
   parseFriendTagInput,
   sanitizeProfileUpdate,
   filterHydratedFriendsByTab,
+  buildServerInviteLink,
+  parseInviteInput,
   HydratedFriendItem,
 } from './chatLogic';
 
@@ -171,3 +173,20 @@ test('filterHydratedFriendsByTab separates online, all, pending, and blocked fri
   assert.equal(filterHydratedFriendsByTab(sample, 'pending').length, 1);
   assert.equal(filterHydratedFriendsByTab(sample, 'blocked').length, 1);
 });
+
+test('buildServerInviteLink and parseInviteInput handle full URLs and short invite codes', () => {
+  const link = buildServerInviteLink('https://wapper.vercel.app/', 'srv_wapper_community');
+  assert.equal(link, 'https://wapper.vercel.app/?invite=srv_wapper_community');
+
+  const parsedUrl = parseInviteInput(link);
+  assert.equal(parsedUrl.valid, true);
+  assert.equal(parsedUrl.inviteTarget, 'srv_wapper_community');
+
+  const parsedCode = parseInviteInput('wapper-community');
+  assert.equal(parsedCode.valid, true);
+  assert.equal(parsedCode.inviteTarget, 'wapper-community');
+
+  const parsedEmpty = parseInviteInput('   ');
+  assert.equal(parsedEmpty.valid, false);
+});
+
