@@ -2246,10 +2246,9 @@ export default function App() {
                               {member.username}
                             </span>
                             {memberIsFounder && (
-                              <Crown
-                                className="w-3 h-3 text-amber-400 shrink-0"
-                                title="👑 Founder & Dev"
-                              />
+                              <span title="👑 Founder & Dev" className="inline-flex">
+                                <Crown className="w-3 h-3 text-amber-400 shrink-0" />
+                              </span>
                             )}
                             {member.isLive && (
                               <span className="px-1 py-0.2 rounded bg-rose-500/20 border border-rose-500/50 text-rose-300 text-[9px] font-bold animate-pulse">
@@ -2265,10 +2264,9 @@ export default function App() {
 
                       <div className="flex items-center gap-1 text-slate-400 shrink-0">
                         {member.activeVoiceChannelId && (
-                          <Radio
-                            className="w-3.5 h-3.5 text-emerald-400"
-                            title="In P2P Voice Channel"
-                          />
+                          <span title="In P2P Voice Channel" className="inline-flex">
+                            <Radio className="w-3.5 h-3.5 text-emerald-400" />
+                          </span>
                         )}
                         {member.isMuted && <MicOff className="w-3.5 h-3.5 text-rose-400" />}
                         {member.isDeafened && <VolumeX className="w-3.5 h-3.5 text-rose-400" />}

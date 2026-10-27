@@ -314,10 +314,9 @@ export const ChannelList: React.FC<ChannelListProps> = ({
                                 {peer.username}
                               </span>
                               {peerIsFounder && (
-                                <Crown
-                                  className="w-3 h-3 text-amber-400 shrink-0"
-                                  title="👑 Founder & Dev"
-                                />
+                                <span title="👑 Founder & Dev" className="inline-flex">
+                                  <Crown className="w-3 h-3 text-amber-400 shrink-0" />
+                                </span>
                               )}
                               {peer.isLive && (
                                 <span className="px-1 py-0.2 rounded bg-rose-500/20 text-rose-300 text-[9px] font-bold">
