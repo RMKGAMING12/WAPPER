@@ -151,7 +151,7 @@ service cloud.firestore {
 
     // 1. Public User Profiles (/profiles/{userId}) - Non-PII public profile card
     match /profiles/{userId} {
-      allow get: if isSignedIn() && isValidId(userId) && existing().uid is string;
+      allow get: if isSignedIn() && isValidId(userId) && (resource == null || existing().uid is string);
       allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
 
       allow create: if isSignedIn() &&
@@ -190,7 +190,7 @@ service cloud.firestore {
     match /friends/{friendshipId} {
       allow get: if isSignedIn() &&
         isValidId(friendshipId) &&
-        (existing().userId == request.auth.uid || existing().friendId == request.auth.uid);
+        (resource == null || existing().userId == request.auth.uid || existing().friendId == request.auth.uid);
 
       allow list: if isSignedIn() &&
         (resource.data.userId == request.auth.uid || resource.data.friendId == request.auth.uid);

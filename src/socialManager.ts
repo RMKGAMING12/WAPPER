@@ -7,7 +7,9 @@
  */
 import {
   doc,
+  getDoc,
   setDoc,
+  updateDoc,
   deleteDoc,
   serverTimestamp,
 } from 'firebase/firestore';
@@ -41,15 +43,24 @@ async function syncFriendEdgeToFirestore(
   if (cleanUserId !== fbUser.uid && cleanFriendId !== fbUser.uid) return;
 
   const path = `friends/${cleanRelId}`;
+  const edgeRef = doc(db, 'friends', cleanRelId);
   try {
-    await setDoc(doc(db, 'friends', cleanRelId), {
-      id: cleanRelId,
-      userId: cleanUserId,
-      friendId: cleanFriendId,
-      status,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    const existingSnap = await getDoc(edgeRef);
+    if (existingSnap.exists()) {
+      await updateDoc(edgeRef, {
+        status,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(edgeRef, {
+        id: cleanRelId,
+        userId: cleanUserId,
+        friendId: cleanFriendId,
+        status,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }

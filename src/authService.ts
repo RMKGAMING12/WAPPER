@@ -15,6 +15,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  updateDoc,
   serverTimestamp,
 } from 'firebase/firestore';
 import {
@@ -90,27 +91,32 @@ async function persistProfileToCloud(profile: WapperProfile): Promise<void> {
   const fbUser = auth.currentUser;
   if (fbUser && fbUser.emailVerified && fbUser.uid === profile.id) {
     const path = `profiles/${profile.id}`;
+    const profileRef = doc(db, 'profiles', profile.id);
+    const mutableFields = {
+      username: profile.username.slice(0, 32),
+      discriminator: profile.discriminator.slice(0, 4),
+      uniqueTag: profile.uniqueTag.slice(0, 40),
+      avatarUrl: profile.avatarUrl.slice(0, 500000),
+      bannerUrl: profile.bannerUrl.slice(0, 500000),
+      bannerColor: normalizeHexColor(profile.bannerColor, '#5865F2'),
+      bio: profile.bio.slice(0, 300),
+      customStatusText: profile.customStatusText.slice(0, 128),
+      customStatusEmoji: profile.customStatusEmoji.slice(0, 32),
+      profileThemeColor: normalizeHexColor(profile.profileThemeColor, '#5865F2'),
+      status: profile.status,
+      updatedAt: serverTimestamp(),
+    };
     try {
-      const existingSnap = await getDoc(doc(db, 'profiles', profile.id));
-      const payload = {
-        uid: profile.id,
-        username: profile.username.slice(0, 32),
-        discriminator: profile.discriminator.slice(0, 4),
-        uniqueTag: profile.uniqueTag.slice(0, 40),
-        avatarUrl: profile.avatarUrl.slice(0, 500000),
-        bannerUrl: profile.bannerUrl.slice(0, 500000),
-        bannerColor: normalizeHexColor(profile.bannerColor, '#5865F2'),
-        bio: profile.bio.slice(0, 300),
-        customStatusText: profile.customStatusText.slice(0, 128),
-        customStatusEmoji: profile.customStatusEmoji.slice(0, 32),
-        profileThemeColor: normalizeHexColor(profile.profileThemeColor, '#5865F2'),
-        status: profile.status,
-        createdAt: existingSnap.exists()
-          ? existingSnap.data().createdAt || serverTimestamp()
-          : serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-      await setDoc(doc(db, 'profiles', profile.id), payload);
+      const existingSnap = await getDoc(profileRef);
+      if (existingSnap.exists()) {
+        await updateDoc(profileRef, mutableFields);
+      } else {
+        await setDoc(profileRef, {
+          uid: profile.id,
+          ...mutableFields,
+          createdAt: serverTimestamp(),
+        });
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, path);
     }

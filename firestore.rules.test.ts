@@ -30,4 +30,7 @@ test('Dirty Dozen Security Invariants in firestore.rules', () => {
   // 6. Master Gate parent existence check
   assert.match(rulesContent, /exists\(\/databases\/\$\(database\)\/documents\/profiles\/\$\(incoming\(\)\.userId\)\)/);
   assert.match(rulesContent, /exists\(\/databases\/\$\(database\)\/documents\/servers\/\$\(serverId\)\/channels\/\$\(channelId\)\)/);
+
+  // 7. Non-existent document get check (prevents NullPointerError before initial profile creation)
+  assert.match(rulesContent, /resource == null \|\| existing\(\)\.uid is string/);
 });
