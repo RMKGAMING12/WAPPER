@@ -1013,8 +1013,16 @@ async function startServer() {
 
   if (useViteDevMiddleware) {
     const { createServer: createViteServer } = await import('vite');
+    const isHmrDisabled =
+      process.env.DISABLE_HMR === 'true' ||
+      Boolean(process.env.K_SERVICE) ||
+      Boolean(process.env.CLOUD_RUN_JOB);
+
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: isHmrDisabled ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
