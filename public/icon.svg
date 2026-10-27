@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="wapperGrad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4F46E5" />
+      <stop offset="50%" stop-color="#6366F1" />
+      <stop offset="100%" stop-color="#0EA5E9" />
+    </linearGradient>
+    <linearGradient id="waveGrad" x1="120" y1="140" x2="392" y2="372" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#E0E7FF" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#wapperGrad)" />
+  <rect x="24" y="24" width="464" height="464" rx="96" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="4" />
+  <path d="M128 168C128 145.909 145.909 128 168 128H344C366.091 128 384 145.909 384 168V296C384 318.091 366.091 336 344 336H236L164 388V336H168C145.909 336 128 318.091 128 296V168Z" fill="#0F172A" fill-opacity="0.35" />
+  <path d="M168 196L206 284L256 188L306 284L344 196" stroke="url(#waveGrad)" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" />
+  <circle cx="168" cy="196" r="16" fill="#38BDF8" />
+  <circle cx="344" cy="196" r="16" fill="#38BDF8" />
+</svg>

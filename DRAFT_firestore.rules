@@ -1,0 +1,289 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Safety Net (Default Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    // Entity Blueprints (Pillar 2: Anti-Update-Gap)
+    function isValidProfile(data) {
+      return data.keys().hasAll([
+        'uid',
+        'username',
+        'discriminator',
+        'uniqueTag',
+        'avatarUrl',
+        'bannerUrl',
+        'bannerColor',
+        'bio',
+        'customStatusText',
+        'customStatusEmoji',
+        'profileThemeColor',
+        'status',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid',
+        'username',
+        'discriminator',
+        'uniqueTag',
+        'avatarUrl',
+        'bannerUrl',
+        'bannerColor',
+        'bio',
+        'customStatusText',
+        'customStatusEmoji',
+        'profileThemeColor',
+        'status',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      isValidId(data.uid) &&
+      data.uid == request.auth.uid &&
+      data.username is string && data.username.size() >= 2 && data.username.size() <= 32 &&
+      data.discriminator is string && data.discriminator.size() == 4 && data.discriminator.matches('^[0-9]{4}$') &&
+      data.uniqueTag is string && data.uniqueTag.size() >= 7 && data.uniqueTag.size() <= 40 &&
+      data.avatarUrl is string && data.avatarUrl.size() <= 500000 &&
+      data.bannerUrl is string && data.bannerUrl.size() <= 500000 &&
+      data.bannerColor is string && data.bannerColor.size() >= 4 && data.bannerColor.size() <= 9 &&
+      data.bio is string && data.bio.size() <= 300 &&
+      data.customStatusText is string && data.customStatusText.size() <= 128 &&
+      data.customStatusEmoji is string && data.customStatusEmoji.size() <= 32 &&
+      data.profileThemeColor is string && data.profileThemeColor.size() >= 4 && data.profileThemeColor.size() <= 9 &&
+      data.status is string && data.status.size() <= 16 &&
+      (data.status == 'online' || data.status == 'idle' || data.status == 'dnd' || data.status == 'offline') &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidFriendRelationship(data) {
+      return data.keys().hasAll(['id', 'userId', 'friendId', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'friendId', 'status', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.userId) &&
+        isValidId(data.friendId) &&
+        data.userId != data.friendId &&
+        (data.userId == request.auth.uid || data.friendId == request.auth.uid) &&
+        data.status is string && data.status.size() <= 24 &&
+        (
+          data.status == 'pending_incoming' ||
+          data.status == 'pending_outgoing' ||
+          data.status == 'accepted' ||
+          data.status == 'blocked'
+        ) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidServer(data) {
+      return data.keys().hasAll(['id', 'name', 'ownerId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'ownerId', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 80 &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidChannel(data) {
+      return data.keys().hasAll(['id', 'serverId', 'name', 'type', 'category', 'ownerId', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'serverId', 'name', 'type', 'category', 'ownerId', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.serverId) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 64 &&
+        data.type is string && data.type.size() <= 16 &&
+        (data.type == 'text' || data.type == 'voice') &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 48 &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'channelId', 'serverId', 'authorId', 'authorName', 'content', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id',
+          'channelId',
+          'serverId',
+          'authorId',
+          'authorName',
+          'authorAvatar',
+          'content',
+          'gifUrl',
+          'attachmentUrl',
+          'attachmentAnalysis',
+          'createdAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.channelId) &&
+        isValidId(data.serverId) &&
+        isValidId(data.authorId) &&
+        data.authorId == request.auth.uid &&
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 64 &&
+        (!('authorAvatar' in data) || (data.authorAvatar is string && data.authorAvatar.size() <= 500000)) &&
+        data.content is string && data.content.size() <= 4000 &&
+        (!('gifUrl' in data) || (data.gifUrl is string && data.gifUrl.size() <= 2048)) &&
+        (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 600000)) &&
+        (!('attachmentAnalysis' in data) || (data.attachmentAnalysis is string && data.attachmentAnalysis.size() <= 4000)) &&
+        data.createdAt is timestamp;
+    }
+
+    // 1. Public User Profiles (/profiles/{userId}) - Non-PII public profile card
+    match /profiles/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && existing().uid is string;
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(userId) &&
+        userId == request.auth.uid &&
+        isValidProfile(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidProfile(incoming()) &&
+        isValidId(userId) &&
+        userId == request.auth.uid &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'username',
+            'discriminator',
+            'uniqueTag',
+            'avatarUrl',
+            'bannerUrl',
+            'bannerColor',
+            'bio',
+            'customStatusText',
+            'customStatusEmoji',
+            'profileThemeColor',
+            'status',
+            'updatedAt'
+          ])
+        );
+    }
+
+    // 2. Friends Social Graph (/friends/{friendshipId})
+    match /friends/{friendshipId} {
+      allow get: if isSignedIn() &&
+        isValidId(friendshipId) &&
+        (existing().userId == request.auth.uid || existing().friendId == request.auth.uid);
+
+      allow list: if isSignedIn() &&
+        (resource.data.userId == request.auth.uid || resource.data.friendId == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+        isValidId(friendshipId) &&
+        isValidFriendRelationship(incoming()) &&
+        incoming().id == friendshipId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/profiles/$(incoming().userId));
+
+      allow update: if isSignedIn() &&
+        isValidFriendRelationship(incoming()) &&
+        isValidId(friendshipId) &&
+        (existing().userId == request.auth.uid || existing().friendId == request.auth.uid) &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        incoming().friendId == existing().friendId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+
+      allow delete: if isSignedIn() &&
+        isValidId(friendshipId) &&
+        (existing().userId == request.auth.uid || existing().friendId == request.auth.uid);
+    }
+
+    // 3. Community Servers (/servers/{serverId})
+    match /servers/{serverId} {
+      allow get: if isSignedIn() && isValidId(serverId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(serverId) &&
+        isValidServer(incoming()) &&
+        incoming().id == serverId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidServer(incoming()) &&
+        isValidId(serverId) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'updatedAt']);
+
+      // 4. Server Channels (/servers/{serverId}/channels/{channelId})
+      match /channels/{channelId} {
+        allow get: if isSignedIn() &&
+          isValidId(serverId) &&
+          isValidId(channelId) &&
+          existing().ownerId == request.auth.uid &&
+          get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid;
+
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+
+        allow create: if isSignedIn() &&
+          isValidId(serverId) &&
+          isValidId(channelId) &&
+          isValidChannel(incoming()) &&
+          incoming().id == channelId &&
+          incoming().serverId == serverId &&
+          incoming().createdAt == request.time &&
+          get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid;
+
+        // 5. Channel Messages (/servers/{serverId}/channels/{channelId}/messages/{messageId})
+        match /messages/{messageId} {
+          allow get: if isSignedIn() &&
+            isValidId(serverId) &&
+            isValidId(channelId) &&
+            isValidId(messageId) &&
+            existing().authorId == request.auth.uid &&
+            get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid;
+
+          allow list: if isSignedIn() && resource.data.authorId == request.auth.uid;
+
+          allow create: if isSignedIn() &&
+            isValidId(serverId) &&
+            isValidId(channelId) &&
+            isValidId(messageId) &&
+            isValidMessage(incoming()) &&
+            incoming().id == messageId &&
+            incoming().channelId == channelId &&
+            incoming().serverId == serverId &&
+            incoming().createdAt == request.time &&
+            exists(/databases/$(database)/documents/servers/$(serverId)/channels/$(channelId)) &&
+            get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid;
+        }
+      }
+    }
+  }
+}

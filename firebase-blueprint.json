@@ -1,0 +1,127 @@
+{
+  "entities": {
+    "Profile": {
+      "title": "Profile",
+      "description": "Public user profile extending Google Auth with custom avatar, banner, bio, status emoji/text, and theme color.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "username": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "discriminator": { "type": "string", "minLength": 4, "maxLength": 4, "pattern": "^[0-9]{4}$" },
+        "uniqueTag": { "type": "string", "minLength": 7, "maxLength": 40 },
+        "avatarUrl": { "type": "string", "maxLength": 500000 },
+        "bannerUrl": { "type": "string", "maxLength": 500000 },
+        "bannerColor": { "type": "string", "minLength": 4, "maxLength": 9 },
+        "bio": { "type": "string", "maxLength": 300 },
+        "customStatusText": { "type": "string", "maxLength": 128 },
+        "customStatusEmoji": { "type": "string", "maxLength": 32 },
+        "profileThemeColor": { "type": "string", "minLength": 4, "maxLength": 9 },
+        "status": { "type": "string", "enum": ["online", "idle", "dnd", "offline"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "uid",
+        "username",
+        "discriminator",
+        "uniqueTag",
+        "avatarUrl",
+        "bannerUrl",
+        "bannerColor",
+        "bio",
+        "customStatusText",
+        "customStatusEmoji",
+        "profileThemeColor",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FriendRelationship": {
+      "title": "FriendRelationship",
+      "description": "Directional social connection between two Wapper profiles.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "friendId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "status": {
+          "type": "string",
+          "enum": ["pending_incoming", "pending_outgoing", "accepted", "blocked"]
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "friendId", "status", "createdAt", "updatedAt"]
+    },
+    "Server": {
+      "title": "Server",
+      "description": "A Wapper community server.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "ownerId", "createdAt", "updatedAt"]
+    },
+    "Channel": {
+      "title": "Channel",
+      "description": "A text or voice channel inside a Wapper server.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "serverId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "type": { "type": "string", "enum": ["text", "voice"] },
+        "category": { "type": "string", "maxLength": 48 },
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "serverId", "name", "type", "category", "ownerId", "createdAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A message inside a Wapper channel.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "channelId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "serverId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "authorId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "authorName": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "authorAvatar": { "type": "string", "maxLength": 500000 },
+        "content": { "type": "string", "maxLength": 4000 },
+        "gifUrl": { "type": "string", "maxLength": 2048 },
+        "attachmentUrl": { "type": "string", "maxLength": 600000 },
+        "attachmentAnalysis": { "type": "string", "maxLength": 4000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "channelId", "serverId", "authorId", "authorName", "content", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/profiles/{userId}": {
+      "schema": "Profile",
+      "description": "Public user customization profile (non-PII)."
+    },
+    "/friends/{friendshipId}": {
+      "schema": "FriendRelationship",
+      "description": "User friend relationship documents."
+    },
+    "/servers/{serverId}": {
+      "schema": "Server",
+      "description": "Community servers."
+    },
+    "/servers/{serverId}/channels/{channelId}": {
+      "schema": "Channel",
+      "description": "Text and voice channels inside a server."
+    },
+    "/servers/{serverId}/channels/{channelId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Persistent messages inside a channel."
+    }
+  }
+}

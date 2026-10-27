@@ -1,0 +1,6 @@
+{
+  "name": "Wapper — Open-Source P2P Voice, Video & Chat PWA",
+  "description": "A 100% free, open-source Discord alternative built as an installable Progressive Web App with peer-to-peer WebRTC voice/video, real-time Socket.io channels, custom emojis, live GIFs, and Gemini AI image tools.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
