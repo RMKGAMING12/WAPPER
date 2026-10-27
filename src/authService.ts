@@ -117,6 +117,7 @@ async function persistProfileToCloud(profile: WapperProfile): Promise<void> {
     const profileRef = doc(db, 'profiles', profile.id);
     const mutableFields = {
       username: profile.username.slice(0, 32),
+      email: profile.email || fbUser.email || '',
       discriminator: profile.discriminator.slice(0, 4),
       uniqueTag: profile.uniqueTag.slice(0, 40),
       avatarUrl: profile.avatarUrl.slice(0, 500000),
@@ -165,6 +166,7 @@ export function mapFirestoreDocToProfile(
     username,
     discriminator,
     uniqueTag: String(docData.uniqueTag || formatUniqueTag(username, discriminator)),
+    email: docData.email ? String(docData.email) : undefined,
     avatarUrl: String(docData.avatarUrl || ''),
     bannerUrl: String(docData.bannerUrl || ''),
     bannerColor: String(docData.bannerColor || '#5865F2'),

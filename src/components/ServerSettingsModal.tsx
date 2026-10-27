@@ -16,7 +16,7 @@ import {
   ServerRole,
   RolePermissionKey,
   WapperProfile,
-  isFounderUser,
+  isFounderEmail,
   getUserHighestRole,
   validateEmojiName,
   normalizeHexColor,
@@ -526,7 +526,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
                 {members.map((member) => {
                   const assignedIds = memberRoles[member.id] || [];
                   const highestRole = getUserHighestRole(roles, assignedIds);
-                  const memberIsFounder = isFounderUser(member);
+                  const memberIsFounder = isFounderEmail(member.email);
                   const nameColor =
                     highestRole?.color || member.profileThemeColor || '#F8FAFC';
 

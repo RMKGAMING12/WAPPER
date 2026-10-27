@@ -63,7 +63,7 @@ import {
   executeSlashCommand,
   getUserHighestRole,
   hasServerPermission,
-  isFounderUser,
+  isFounderEmail,
   buildDMConversationId,
   sortMessagesByCreatedAtAsc,
   doesMessageMentionUser,
@@ -1752,7 +1752,8 @@ export default function App() {
       authorId: string,
       fallbackName: string,
       fallbackAvatar: string,
-      fallbackColor?: string
+      fallbackColor?: string,
+      fallbackEmail?: string
     ) => {
       if (currentUser && authorId === currentUser.id) {
         setInspectedProfile(currentUser);
@@ -1760,7 +1761,10 @@ export default function App() {
       }
       const existing = profiles.find((p) => p.id === authorId);
       if (existing) {
-        setInspectedProfile(existing);
+        setInspectedProfile({
+          ...existing,
+          email: existing.email || fallbackEmail,
+        });
         return;
       }
       setInspectedProfile({
@@ -1768,6 +1772,7 @@ export default function App() {
         username: fallbackName,
         discriminator: '0001',
         uniqueTag: `${fallbackName}#0001`,
+        email: fallbackEmail,
         avatarUrl: fallbackAvatar || '',
         bannerUrl: '',
         bannerColor: fallbackColor || '#5865F2',
@@ -2197,7 +2202,7 @@ export default function App() {
                     activeServerRoles,
                     memberRoleIds
                   );
-                  const memberIsFounder = isFounderUser(member);
+                  const memberIsFounder = isFounderEmail(member.email);
                   const nameColor =
                     highestRole?.color || member.profileThemeColor || '#F8FAFC';
                   const statusTicker =

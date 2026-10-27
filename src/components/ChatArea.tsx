@@ -35,7 +35,7 @@ import { auth, db } from '../firebase';
 import {
   parseInlineMarkdown,
   filterSlashCommands,
-  isFounderUser,
+  isFounderEmail,
   buildDMConversationId,
   isMessageInDMConversation,
   sortMessagesByCreatedAtAsc,
@@ -147,7 +147,8 @@ interface ChatAreaProps {
     authorId: string,
     fallbackName: string,
     fallbackAvatar: string,
-    fallbackColor?: string
+    fallbackColor?: string,
+    fallbackEmail?: string
   ) => void;
   onOpenMobileNav?: () => void;
 }
@@ -306,6 +307,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             remoteList.push({
               id: String(d.id || docSnap.id),
               username: String(d.username),
+              email: d.email ? String(d.email) : undefined,
               uniqueTag: d.uniqueTag ? String(d.uniqueTag) : undefined,
               avatarUrl: d.avatarUrl ? String(d.avatarUrl) : '',
               status: (d.status as MentionCandidate['status']) || 'online',
@@ -344,6 +346,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       map.set(currentUserId, {
         id: currentUserId,
         username: currentUsername,
+        email: auth.currentUser?.email || undefined,
         status: 'online',
         roleColor: '#5865F2',
       });
@@ -367,6 +370,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           map.set(msg.authorId, {
             id: msg.authorId,
             username: msg.authorName,
+            email: msg.authorEmail,
             avatarUrl: msg.authorAvatar,
             status: 'online',
             roleColor: msg.authorRoleColor || '#5865F2',
@@ -1290,13 +1294,17 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             const isAuthorSelf = msg.authorId === currentUserId;
             const canEditThisMessage = isAuthorSelf && !msg.isBot;
             const canDeleteThisMessage = isAuthorSelf || canDeleteMessages;
+            const authorCandidate = activeMemberCandidates.find(
+              (m) => m.id === msg.authorId
+            );
+            const authorEmail =
+              msg.authorEmail ||
+              authorCandidate?.email ||
+              (msg.authorId === currentUserId
+                ? auth.currentUser?.email || undefined
+                : undefined);
             const authorIsFounder =
-              !msg.isBot &&
-              isFounderUser({
-                username: msg.authorName,
-                email: msg.authorEmail,
-                id: msg.authorId,
-              });
+              !msg.isBot && isFounderEmail(authorEmail);
             const reactionEntries = Object.entries(msg.reactions || {}).filter(
               ([_k, uids]) => Array.isArray(uids) && uids.length > 0
             );
@@ -1430,7 +1438,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         msg.authorId,
                         displayAuthorName,
                         msg.authorAvatar,
-                        msg.authorRoleColor
+                        msg.authorRoleColor,
+                        authorEmail
                       )
                     }
                     aria-label={`View profile of ${displayAuthorName}`}
@@ -1465,7 +1474,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                             msg.authorId,
                             displayAuthorName,
                             msg.authorAvatar,
-                            msg.authorRoleColor
+                            msg.authorRoleColor,
+                            authorEmail
                           )
                         }
                         className="text-xs font-bold hover:underline cursor-pointer"
@@ -1808,6 +1818,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         <span className="text-xs font-semibold text-white truncate">
                           {member.username}
                         </span>
+                        {isFounderEmail(member.email) && (
+                          <span
+                            title="👑 Founder & Dev"
+                            className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-bold shrink-0"
+                          >
+                            <Crown className="w-2.5 h-2.5 text-amber-400" />
+                            <span>Dev</span>
+                          </span>
+                        )}
                         {member.id === currentUserId && (
                           <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-[9px] font-semibold text-indigo-300">
                             YOU

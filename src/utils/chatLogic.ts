@@ -14,6 +14,7 @@ export interface MarkdownSegment {
 export interface MentionCandidate {
   id: string;
   username: string;
+  email?: string;
   uniqueTag?: string;
   avatarUrl?: string;
   status?: PresenceStatus;
@@ -290,30 +291,44 @@ export function formatUniqueTag(username: string, discriminator: string): string
   return `${cleanName}#${cleanDisc}`;
 }
 
+export const FOUNDER_WHITELISTED_EMAILS = [
+  'mayankraj.mfp23@gmail.com',
+  'mayankraj.mfp26@gmail.com',
+  'mayankraj.mfp29@gmail.com',
+] as const;
+
 /**
- * Detects whether a user is the Wapper Founder & Creator ("Mayank raj" case-insensitive
- * or email "mayankraj.mfp23@gmail.com").
+ * Checks whether an email matches any of the three whitelisted founder/developer addresses.
+ */
+export function isFounderEmail(email?: string | null): boolean {
+  if (!email || typeof email !== 'string') return false;
+  const normalized = email.trim().toLowerCase();
+  return (
+    normalized === 'mayankraj.mfp23@gmail.com' ||
+    normalized === 'mayankraj.mfp26@gmail.com' ||
+    normalized === 'mayankraj.mfp29@gmail.com'
+  );
+}
+
+/**
+ * Strict email-based verification for Founder & Developer status.
+ * CRITICAL SECURITY FIX: All username/display name string checks have been completely removed.
+ * A user is recognized as a Founder/Developer ONLY if their authenticated email
+ * strictly matches one of the three whitelisted addresses:
+ * - mayankraj.mfp23@gmail.com
+ * - mayankraj.mfp26@gmail.com
+ * - mayankraj.mfp29@gmail.com
+ *
+ * If someone creates an account named "Mayank raj" with a different email,
+ * they will NOT receive the badge or any privileges.
  */
 export function isFounderUser(user?: {
-  username?: string | null;
   email?: string | null;
+  username?: string | null;
   id?: string | null;
 } | null): boolean {
   if (!user) return false;
-  const cleanName = (user.username || '').trim().toLowerCase();
-  const cleanEmail = (user.email || '').trim().toLowerCase();
-  const cleanId = (user.id || '').trim().toLowerCase();
-
-  if (cleanEmail === 'mayankraj.mfp23@gmail.com' || cleanEmail === 'mayank.raj@google.com') {
-    return true;
-  }
-  if (cleanName === 'mayank raj' || cleanName.startsWith('mayank raj#')) {
-    return true;
-  }
-  if (cleanId.includes('mayank_raj') || cleanId.includes('mayankraj_mfp23')) {
-    return true;
-  }
-  return false;
+  return isFounderEmail(user.email);
 }
 
 /**

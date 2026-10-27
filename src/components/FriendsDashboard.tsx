@@ -20,7 +20,7 @@ import {
   HydratedFriendItem,
   WapperProfile,
   filterHydratedFriendsByTab,
-  isFounderUser,
+  isFounderEmail,
 } from '../utils/chatLogic';
 
 interface FriendsDashboardProps {
@@ -441,7 +441,7 @@ export const FriendsDashboard: React.FC<FriendsDashboardProps> = ({
                             <span className="text-xs font-mono text-slate-400">
                               #{user.discriminator}
                             </span>
-                            {isFounderUser(user) && (
+                            {isFounderEmail(user.email) && (
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/50 text-amber-300 text-[10px] font-bold">
                                 <Crown className="w-3 h-3 text-amber-400" />
                                 <span>👑 Founder &amp; Dev</span>
@@ -598,7 +598,7 @@ export const FriendsDashboard: React.FC<FriendsDashboardProps> = ({
                             <span className="text-xs font-mono text-slate-400">
                               #{profile.discriminator}
                             </span>
-                            {isFounderUser(profile) && (
+                            {isFounderEmail(profile.email) && (
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/50 text-amber-300 text-[10px] font-bold">
                                 <Crown className="w-3 h-3 text-amber-400" />
                                 <span>👑 Founder &amp; Dev</span>

@@ -14,6 +14,7 @@ import {
   filterSlashCommands,
   executeSlashCommand,
   isFounderUser,
+  isFounderEmail,
   getUserHighestRole,
   hasServerPermission,
   buildDMConversationId,
@@ -256,10 +257,24 @@ test('filterSlashCommands and executeSlashCommand handle /youtube, /live, /poll,
   assert.equal(rollCmd.botEmbed?.embedType, 'roll');
 });
 
-test('isFounderUser and role permission helpers identify Mayank Raj and evaluate role hierarchy', () => {
-  assert.equal(isFounderUser({ username: 'Mayank raj' }), true);
+test('isFounderUser and role permission helpers enforce strict email verification and evaluate role hierarchy', () => {
+  // All three whitelisted emails must be recognized
   assert.equal(isFounderUser({ email: 'mayankraj.mfp23@gmail.com' }), true);
+  assert.equal(isFounderUser({ email: 'mayankraj.mfp26@gmail.com' }), true);
+  assert.equal(isFounderUser({ email: 'mayankraj.mfp29@gmail.com' }), true);
+
+  // Case-insensitivity support for emails
+  assert.equal(isFounderUser({ email: 'MAYANKRAJ.MFP23@GMAIL.COM' }), true);
+
+  // CRITICAL SECURITY CHECK: Name match alone ("Mayank raj") with non-matching or missing email MUST return false
+  assert.equal(isFounderUser({ username: 'Mayank raj' }), false);
+  assert.equal(isFounderUser({ username: 'Mayank raj', email: 'impostor@gmail.com' }), false);
+  assert.equal(isFounderUser({ username: 'Mayank Raj', email: 'mayankraj.mfp99@gmail.com' }), false);
   assert.equal(isFounderUser({ username: 'RandomUser', email: 'user@example.com' }), false);
+
+  assert.equal(isFounderEmail('mayankraj.mfp23@gmail.com'), true);
+  assert.equal(isFounderEmail('other@gmail.com'), false);
+  assert.equal(isFounderEmail(undefined), false);
 
   const highest = getUserHighestRole(DEFAULT_SERVER_ROLES, ['role_member', 'role_moderator']);
   assert.equal(highest?.id, 'role_moderator');

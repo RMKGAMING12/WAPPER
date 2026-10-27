@@ -24,7 +24,7 @@ import {
   WapperProfile,
   groupChannelsByType,
   sanitizeChannelName,
-  isFounderUser,
+  isFounderEmail,
 } from '../utils/chatLogic';
 
 export interface VoiceChannelOccupant {
@@ -159,7 +159,7 @@ export const ChannelList: React.FC<ChannelListProps> = ({
     .slice(0, 2)
     .toUpperCase();
 
-  const currentUserIsFounder = isFounderUser(currentUser);
+  const currentUserIsFounder = isFounderEmail(currentUser.email);
 
   const statusTickerText =
     currentUser.customStatusEmoji || currentUser.customStatusText
@@ -267,7 +267,7 @@ export const ChannelList: React.FC<ChannelListProps> = ({
                         .join('')
                         .slice(0, 2)
                         .toUpperCase();
-                      const peerIsFounder = isFounderUser(peer);
+                      const peerIsFounder = isFounderEmail(peer.email);
                       const peerTicker =
                         peer.customStatusEmoji || peer.customStatusText
                           ? `${peer.customStatusEmoji} ${peer.customStatusText}`.trim()

@@ -13,8 +13,9 @@ import {
 import {
   WapperProfile,
   normalizeHexColor,
-  isFounderUser,
+  isFounderEmail,
 } from '../utils/chatLogic';
+import { getLocalProfilesRegistry } from '../authService';
 
 interface UserProfilePopoverProps {
   profile: WapperProfile | null;
@@ -56,7 +57,9 @@ export const UserProfilePopover: React.FC<UserProfilePopoverProps> = ({
   if (!profile) return null;
 
   const isSelf = profile.id === currentUserId;
-  const profileIsFounder = isFounderUser(profile);
+  const profileEmail =
+    profile.email || getLocalProfilesRegistry()[profile.id]?.email;
+  const profileIsFounder = isFounderEmail(profileEmail);
   const themeHex = normalizeHexColor(profile.profileThemeColor, '#5865F2');
   const bannerHex = normalizeHexColor(profile.bannerColor, '#5865F2');
   const initials = profile.username
