@@ -1,5 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  collection,
+  onSnapshot,
+  query,
+  where,
+  QuerySnapshot,
+  DocumentData,
+} from 'firebase/firestore';
+import {
   Hash,
   Send,
   Smile,
@@ -23,15 +31,31 @@ import {
   ExternalLink,
   Terminal,
 } from 'lucide-react';
+import { auth, db } from '../firebase';
 import {
   parseInlineMarkdown,
   filterSlashCommands,
   isFounderUser,
+  buildDMConversationId,
+  isMessageInDMConversation,
+  sortMessagesByCreatedAtAsc,
+  extractMentionQuery,
+  filterMentionCandidates,
+  injectMentionIntoInput,
+  doesMessageMentionUser,
+  sanitizeId,
+  MentionCandidate,
   MessageReplyMetadata,
   BotEmbedPayload,
   SlashCommandDefinition,
   BLUEPRINT_LIMITS,
 } from '../utils/chatLogic';
+import { playNotificationPing } from '../utils/soundNotification';
+import { getLocalProfilesRegistry } from '../authService';
+import {
+  readLocalDirectMessagesForPair,
+  subscribeToLocalMessageRealtimeBus,
+} from '../supabaseClient';
 import {
   GifEmojiPicker,
   GifMediaItem,
@@ -42,6 +66,9 @@ export interface ChatMessageItem {
   id: string;
   channelId: string;
   serverId: string;
+  conversationId?: string;
+  senderId?: string;
+  receiverId?: string;
   authorId: string;
   authorName: string;
   authorAvatar: string;
@@ -83,9 +110,11 @@ interface ChatAreaProps {
   channelName: string;
   channelTopic: string;
   isDMMode: boolean;
+  dmPeerId?: string | null;
   serverId: string;
   currentUserId: string;
   currentUsername: string;
+  serverMembers?: MentionCandidate[];
   canDeleteMessages?: boolean;
   canManageEmojis?: boolean;
   messages: ChatMessageItem[];
@@ -106,6 +135,10 @@ interface ChatAreaProps {
   onToggleReaction: (messageId: string, reactionKey: string) => void;
   onEditMessage: (messageId: string, newContent: string) => void;
   onDeleteMessage: (messageId: string) => void;
+  onRealtimeMessagesSync?: (
+    targetChannelId: string,
+    syncedMessages: ChatMessageItem[]
+  ) => void;
   onToggleFavoriteGif: (gif: GifMediaItem) => void;
   onTypingSignal: (isTyping: boolean) => void;
   onCreateCustomEmoji: (name: string, imageUrl: string) => void;
@@ -122,14 +155,68 @@ interface ChatAreaProps {
 const QUICK_HOVER_REACTIONS = ['❤️', '😂', '🔥', '👍'];
 const POLL_NUMBER_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
 
+function parseSnapshotDocToChatMessage(
+  docId: string,
+  d: DocumentData,
+  fallbackChannelId: string,
+  fallbackServerId: string
+): ChatMessageItem {
+  let createdIso = new Date().toISOString();
+  if (d.createdAt) {
+    if (typeof d.createdAt.toDate === 'function') {
+      createdIso = d.createdAt.toDate().toISOString();
+    } else if (typeof d.createdAt === 'string') {
+      createdIso = d.createdAt;
+    } else if (typeof d.createdAt.seconds === 'number') {
+      createdIso = new Date(d.createdAt.seconds * 1000).toISOString();
+    }
+  }
+
+  return {
+    id: String(d.id || docId),
+    channelId: String(d.channelId || d.conversationId || fallbackChannelId),
+    serverId: String(d.serverId || fallbackServerId),
+    conversationId: d.conversationId ? String(d.conversationId) : undefined,
+    senderId: d.senderId
+      ? String(d.senderId)
+      : d.authorId
+      ? String(d.authorId)
+      : undefined,
+    receiverId: d.receiverId ? String(d.receiverId) : undefined,
+    authorId: String(d.authorId || d.senderId || ''),
+    authorName: String(d.authorName || 'WapperUser'),
+    authorAvatar: String(d.authorAvatar || ''),
+    authorEmail: d.authorEmail ? String(d.authorEmail) : undefined,
+    authorRoleColor: String(d.authorRoleColor || '#5865F2'),
+    authorIsLive: Boolean(d.authorIsLive),
+    content: String(d.content || ''),
+    gifUrl: d.gifUrl ? String(d.gifUrl) : undefined,
+    attachmentUrl: d.attachmentUrl ? String(d.attachmentUrl) : undefined,
+    attachmentAnalysis: d.attachmentAnalysis
+      ? String(d.attachmentAnalysis)
+      : undefined,
+    replyTo: d.replyTo ? (d.replyTo as MessageReplyMetadata) : undefined,
+    reactions: d.reactions
+      ? (d.reactions as Record<string, string[]>)
+      : undefined,
+    isBot: Boolean(d.isBot),
+    botName: d.botName ? String(d.botName) : undefined,
+    botEmbed: d.botEmbed ? (d.botEmbed as BotEmbedPayload) : undefined,
+    isEdited: Boolean(d.isEdited),
+    createdAt: createdIso,
+  };
+}
+
 export const ChatArea: React.FC<ChatAreaProps> = ({
   channelId,
   channelName,
   channelTopic,
   isDMMode,
+  dmPeerId = null,
   serverId,
   currentUserId,
   currentUsername,
+  serverMembers = [],
   canDeleteMessages = false,
   canManageEmojis = true,
   messages,
@@ -144,6 +231,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onToggleReaction,
   onEditMessage,
   onDeleteMessage,
+  onRealtimeMessagesSync,
   onToggleFavoriteGif,
   onTypingSignal,
   onCreateCustomEmoji,
@@ -152,22 +240,44 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   onOpenMobileNav,
 }) => {
   const [inputText, setInputText] = useState('');
+  const [cursorIndex, setCursorIndex] = useState<number>(0);
+  const [selectedMentionIdx, setSelectedMentionIdx] = useState<number>(0);
+  const [firestoreMembers, setFirestoreMembers] = useState<MentionCandidate[]>(
+    () => Object.values(getLocalProfilesRegistry())
+  );
   const [searchFilter, setSearchFilter] = useState('');
   const [slashErrorNotice, setSlashErrorNotice] = useState<string | null>(null);
+
+  // Real-Time Synchronized Stream State (Firestore `onSnapshot` + Cross-Tab BroadcastChannel)
+  const [realtimeMessages, setRealtimeMessages] = useState<ChatMessageItem[]>([]);
+  const [deletedMessageIds, setDeletedMessageIds] = useState<Set<string>>(
+    () => new Set()
+  );
 
   // Unified Media Picker State
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerTab, setPickerTab] = useState<MediaPickerTab>('trending');
-  const [reactionTargetMessageId, setReactionTargetMessageId] = useState<string | null>(null);
+  const [reactionTargetMessageId, setReactionTargetMessageId] = useState<
+    string | null
+  >(null);
 
   // Reply & Inline Edit State
-  const [replyingTo, setReplyingTo] = useState<MessageReplyMetadata | null>(null);
+  const [replyingTo, setReplyingTo] = useState<MessageReplyMetadata | null>(
+    null
+  );
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
+  const onRealtimeMessagesSyncRef = useRef(onRealtimeMessagesSync);
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
+  const initialChannelLoadRef = useRef<string>('');
+
+  useEffect(() => {
+    onRealtimeMessagesSyncRef.current = onRealtimeMessagesSync;
+  }, [onRealtimeMessagesSync]);
 
   // Build lookup dictionary of `:emoji_name:` -> `imageUrl`
   const emojiLookup = useMemo(() => {
@@ -178,15 +288,397 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     return map;
   }, [customEmojis]);
 
+  // Client-side Firestore `profiles` listener so active server members are always available for `@` mentions
+  useEffect(() => {
+    setFirestoreMembers(Object.values(getLocalProfilesRegistry()));
+
+    if (!auth.currentUser || !auth.currentUser.emailVerified) {
+      return;
+    }
+
+    const unsubProfiles = onSnapshot(
+      collection(db, 'profiles'),
+      (snap) => {
+        const remoteList: MentionCandidate[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data();
+          if (d && d.username) {
+            remoteList.push({
+              id: String(d.id || docSnap.id),
+              username: String(d.username),
+              uniqueTag: d.uniqueTag ? String(d.uniqueTag) : undefined,
+              avatarUrl: d.avatarUrl ? String(d.avatarUrl) : '',
+              status: (d.status as MentionCandidate['status']) || 'online',
+              roleColor: d.profileThemeColor
+                ? String(d.profileThemeColor)
+                : '#5865F2',
+              customStatusEmoji: d.customStatusEmoji
+                ? String(d.customStatusEmoji)
+                : '',
+              customStatusText: d.customStatusText
+                ? String(d.customStatusText)
+                : '',
+            });
+          }
+        });
+        const mergedMap = new Map<string, MentionCandidate>();
+        for (const localP of Object.values(getLocalProfilesRegistry())) {
+          mergedMap.set(localP.id, localP);
+        }
+        for (const remP of remoteList) {
+          mergedMap.set(remP.id, remP);
+        }
+        setFirestoreMembers(Array.from(mergedMap.values()));
+      },
+      () => {}
+    );
+
+    return () => unsubProfiles();
+  }, [currentUserId]);
+
+  // Consolidated active server member directory for `@` mention autocomplete & markdown highlighting
+  const activeMemberCandidates = useMemo(() => {
+    const map = new Map<string, MentionCandidate>();
+
+    if (currentUserId && currentUsername) {
+      map.set(currentUserId, {
+        id: currentUserId,
+        username: currentUsername,
+        status: 'online',
+        roleColor: '#5865F2',
+      });
+    }
+
+    for (const m of firestoreMembers) {
+      if (m && m.username) {
+        map.set(m.id || m.username, m);
+      }
+    }
+
+    for (const m of serverMembers) {
+      if (m && m.username) {
+        map.set(m.id || m.username, m);
+      }
+    }
+
+    for (const msg of [...messages, ...realtimeMessages]) {
+      if (msg.authorId && msg.authorName && !msg.isBot) {
+        if (!map.has(msg.authorId)) {
+          map.set(msg.authorId, {
+            id: msg.authorId,
+            username: msg.authorName,
+            avatarUrl: msg.authorAvatar,
+            status: 'online',
+            roleColor: msg.authorRoleColor || '#5865F2',
+          });
+        }
+      }
+    }
+
+    return Array.from(map.values());
+  }, [
+    currentUserId,
+    currentUsername,
+    firestoreMembers,
+    serverMembers,
+    messages,
+    realtimeMessages,
+  ]);
+
+  const knownMemberNames = useMemo(
+    () => activeMemberCandidates.map((m) => m.username),
+    [activeMemberCandidates]
+  );
+
   // Slash command autocomplete suggestions when input starts with `/`
   const matchingSlashCommands = useMemo(() => {
     return filterSlashCommands(inputText);
   }, [inputText]);
 
-  // Scroll-lock to bottom when messages arrive in active channel
+  // `@` Mention detection & autocomplete candidates when user types `@`
+  const mentionTrigger = useMemo(() => {
+    return extractMentionQuery(inputText, cursorIndex);
+  }, [inputText, cursorIndex]);
+
+  const matchingMentionMembers = useMemo(() => {
+    if (!mentionTrigger.active) return [];
+    return filterMentionCandidates(
+      activeMemberCandidates,
+      mentionTrigger.query,
+      8
+    );
+  }, [mentionTrigger, activeMemberCandidates]);
+
+  useEffect(() => {
+    setSelectedMentionIdx(0);
+  }, [mentionTrigger.query, mentionTrigger.active]);
+
+  /**
+   * REAL-TIME SYNCHRONIZATION ENGINE FOR DIRECT MESSAGES (DMs) & SERVER CHANNELS:
+   * - Uses Firebase Firestore's `onSnapshot` (never one-off `getDocs`) to listen in real time.
+   * - In DM mode (`isDMMode && currentUserId && dmPeerId`), attaches single-field `where`
+   *   listeners on `direct_messages` (`senderId == currentUserId` and `receiverId == currentUserId`)
+   *   and filters in-memory where `(senderId, receiverId)` match the current conversation pair.
+   * - Avoids multi-field `where` + `orderBy` composite queries so Vercel deployments NEVER
+   *   require a manually configured Firestore Composite Index or throw console index errors.
+   * - Orders all messages by `createdAt` ascending (`sortMessagesByCreatedAtAsc`) and updates
+   *   state immediately when either participant sends, reacts to, edits, or deletes a message.
+   */
+  useEffect(() => {
+    if (!currentUserId || !channelId) {
+      setRealtimeMessages([]);
+      return;
+    }
+
+    const cleanCurrentUserId = sanitizeId(currentUserId);
+    const cleanPeerId = dmPeerId ? sanitizeId(dmPeerId) : '';
+    const effectiveConvId =
+      isDMMode && cleanPeerId
+        ? buildDMConversationId(cleanCurrentUserId, cleanPeerId)
+        : sanitizeId(channelId);
+    const cleanServerId = sanitizeId(isDMMode ? 'srv_dm' : serverId);
+
+    // 1. Seed initial DM state from local registry if in DM mode
+    let localCacheMap = new Map<string, ChatMessageItem>();
+    if (isDMMode && cleanPeerId) {
+      const localDMs = readLocalDirectMessagesForPair(
+        cleanCurrentUserId,
+        cleanPeerId
+      );
+      for (const item of localDMs) {
+        localCacheMap.set(item.id, {
+          ...item,
+          authorAvatar: item.authorAvatar || '',
+        });
+      }
+      if (localCacheMap.size > 0) {
+        const initialSorted = sortMessagesByCreatedAtAsc(
+          Array.from(localCacheMap.values())
+        );
+        setRealtimeMessages(initialSorted);
+        onRealtimeMessagesSyncRef.current?.(channelId, initialSorted);
+      } else {
+        setRealtimeMessages([]);
+      }
+    } else {
+      setRealtimeMessages([]);
+    }
+
+    // Track live snapshot maps from each Firestore listener
+    const outgoingDocsMap = new Map<string, ChatMessageItem>();
+    const incomingDocsMap = new Map<string, ChatMessageItem>();
+    const subcollectionDocsMap = new Map<string, ChatMessageItem>();
+
+    const recomputeAndPublish = () => {
+      const mergedMap = new Map<string, ChatMessageItem>();
+      localCacheMap.forEach((val, key) => mergedMap.set(key, val));
+      subcollectionDocsMap.forEach((val, key) => mergedMap.set(key, val));
+      outgoingDocsMap.forEach((val, key) => mergedMap.set(key, val));
+      incomingDocsMap.forEach((val, key) => mergedMap.set(key, val));
+
+      const sortedAscending = sortMessagesByCreatedAtAsc(
+        Array.from(mergedMap.values())
+      );
+      setRealtimeMessages(sortedAscending);
+      onRealtimeMessagesSyncRef.current?.(channelId, sortedAscending);
+    };
+
+    // 2. Subscribe to Cross-Tab BroadcastChannel + Storage Realtime Bus
+    const unsubscribeLocalBus = subscribeToLocalMessageRealtimeBus((event) => {
+      if (event.type === 'UPSERT_MESSAGE') {
+        const m = event.message;
+        const belongsToCurrentView =
+          isDMMode && cleanPeerId
+            ? isMessageInDMConversation(m, cleanCurrentUserId, cleanPeerId)
+            : sanitizeId(m.channelId) === effectiveConvId;
+
+        if (!belongsToCurrentView) return;
+
+        localCacheMap.set(m.id, {
+          ...m,
+          authorAvatar: m.authorAvatar || '',
+        });
+        recomputeAndPublish();
+      } else if (event.type === 'UPDATE_REACTIONS') {
+        const existing =
+          localCacheMap.get(event.messageId) ||
+          outgoingDocsMap.get(event.messageId) ||
+          incomingDocsMap.get(event.messageId) ||
+          subcollectionDocsMap.get(event.messageId);
+        if (existing) {
+          localCacheMap.set(event.messageId, {
+            ...existing,
+            reactions: event.reactions,
+          });
+          recomputeAndPublish();
+        }
+      } else if (event.type === 'EDIT_MESSAGE') {
+        const existing =
+          localCacheMap.get(event.messageId) ||
+          outgoingDocsMap.get(event.messageId) ||
+          incomingDocsMap.get(event.messageId) ||
+          subcollectionDocsMap.get(event.messageId);
+        if (existing) {
+          localCacheMap.set(event.messageId, {
+            ...existing,
+            content: event.content,
+            isEdited: true,
+          });
+          recomputeAndPublish();
+        }
+      } else if (event.type === 'DELETE_MESSAGE') {
+        localCacheMap.delete(event.messageId);
+        outgoingDocsMap.delete(event.messageId);
+        incomingDocsMap.delete(event.messageId);
+        subcollectionDocsMap.delete(event.messageId);
+        setDeletedMessageIds((prev) => {
+          const next = new Set(prev);
+          next.add(event.messageId);
+          return next;
+        });
+        recomputeAndPublish();
+      }
+    });
+
+    // 3. Subscribe to Firebase Firestore `onSnapshot` Real-Time Listeners
+    const unsubscribers: Array<() => void> = [];
+
+    if (auth.currentUser && auth.currentUser.emailVerified) {
+      const authUid = sanitizeId(auth.currentUser.uid);
+
+      if (isDMMode && cleanPeerId) {
+        // Single-field equality query 1: Direct messages sent by the current user
+        // Uses automatic single-field index (zero composite index required on Vercel)
+        const outgoingQuery = query(
+          collection(db, 'direct_messages'),
+          where('senderId', '==', authUid)
+        );
+
+        // Single-field equality query 2: Direct messages received by the current user
+        // Uses automatic single-field index (zero composite index required on Vercel)
+        const incomingQuery = query(
+          collection(db, 'direct_messages'),
+          where('receiverId', '==', authUid)
+        );
+
+        const handleDMSnapshot = (
+          snap: QuerySnapshot<DocumentData>,
+          targetBucket: Map<string, ChatMessageItem>
+        ) => {
+          targetBucket.clear();
+          snap.forEach((docSnap) => {
+            const d = docSnap.data();
+            const parsed = parseSnapshotDocToChatMessage(
+              docSnap.id,
+              d,
+              channelId,
+              'srv_dm'
+            );
+            if (isMessageInDMConversation(parsed, authUid, cleanPeerId)) {
+              targetBucket.set(parsed.id, parsed);
+            }
+          });
+          recomputeAndPublish();
+        };
+
+        unsubscribers.push(
+          onSnapshot(
+            outgoingQuery,
+            (snap) => handleDMSnapshot(snap, outgoingDocsMap),
+            () => {}
+          )
+        );
+
+        unsubscribers.push(
+          onSnapshot(
+            incomingQuery,
+            (snap) => handleDMSnapshot(snap, incomingDocsMap),
+            () => {}
+          )
+        );
+      }
+
+      // Also listen to the channel/DM subcollection `/servers/{serverId}/channels/{channelId}/messages`
+      // without composite filters, sorting in memory by `createdAt` ascending.
+      const subcollectionRef = collection(
+        db,
+        'servers',
+        cleanServerId,
+        'channels',
+        effectiveConvId,
+        'messages'
+      );
+
+      unsubscribers.push(
+        onSnapshot(
+          subcollectionRef,
+          (snap) => {
+            subcollectionDocsMap.clear();
+            snap.forEach((docSnap) => {
+              const parsed = parseSnapshotDocToChatMessage(
+                docSnap.id,
+                docSnap.data(),
+                channelId,
+                cleanServerId
+              );
+              subcollectionDocsMap.set(parsed.id, parsed);
+            });
+            recomputeAndPublish();
+          },
+          () => {}
+        )
+      );
+    }
+
+    return () => {
+      unsubscribeLocalBus();
+      unsubscribers.forEach((unsub) => unsub());
+    };
+  }, [channelId, isDMMode, dmPeerId, serverId, currentUserId]);
+
+  // Merge prop messages + real-time `onSnapshot` messages, ordered by `createdAt` ascending
+  const orderedMessages = useMemo(() => {
+    const combined = [...messages, ...realtimeMessages].filter(
+      (m) => !deletedMessageIds.has(m.id)
+    );
+    return sortMessagesByCreatedAtAsc(combined);
+  }, [messages, realtimeMessages, deletedMessageIds]);
+
+  // Sound Ping Notification Engine:
+  // Triggers a soft Web Audio chime locally whenever:
+  // 1. A newly arrived message mentions `@CurrentUsername` in a text channel, or
+  // 2. A new Direct Message (DM) arrives while the user is looking at a different tab (`document.hidden`).
+  useEffect(() => {
+    if (initialChannelLoadRef.current !== channelId) {
+      initialChannelLoadRef.current = channelId;
+      seenMessageIdsRef.current = new Set(orderedMessages.map((m) => m.id));
+      return;
+    }
+
+    for (const msg of orderedMessages) {
+      if (seenMessageIdsRef.current.has(msg.id)) continue;
+      seenMessageIdsRef.current.add(msg.id);
+
+      const isMentioned =
+        !msg.isBot && doesMessageMentionUser(msg.content, currentUsername);
+      const isIncomingDMOnHiddenTab =
+        isDMMode &&
+        msg.authorId !== currentUserId &&
+        typeof document !== 'undefined' &&
+        document.hidden;
+
+      if (isMentioned) {
+        playNotificationPing('mention');
+      } else if (isIncomingDMOnHiddenTab) {
+        playNotificationPing('dm');
+      }
+    }
+  }, [orderedMessages, channelId, currentUsername, currentUserId, isDMMode]);
+
+  // Scroll-lock to bottom when messages arrive in active channel or DM
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, channelId]);
+  }, [orderedMessages.length, channelId]);
 
   // Clear reply/edit state on channel switch
   useEffect(() => {
@@ -197,7 +689,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value.slice(0, BLUEPRINT_LIMITS.MESSAGE_CONTENT_MAX_LEN);
+    const nextCursor =
+      typeof e.target.selectionStart === 'number'
+        ? e.target.selectionStart
+        : val.length;
     setInputText(val);
+    setCursorIndex(nextCursor);
     if (slashErrorNotice) setSlashErrorNotice(null);
 
     onTypingSignal(val.trim().length > 0);
@@ -209,8 +706,71 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }, 2000);
   };
 
+  const handleSelectMentionCandidate = (candidate: MentionCandidate) => {
+    if (!mentionTrigger.active) return;
+    const { text, nextCursorIndex } = injectMentionIntoInput(
+      inputText,
+      candidate.username,
+      mentionTrigger.startIndex,
+      mentionTrigger.endIndex
+    );
+    setInputText(text);
+    setCursorIndex(nextCursorIndex);
+
+    window.requestAnimationFrame(() => {
+      if (composerInputRef.current) {
+        composerInputRef.current.focus();
+        try {
+          composerInputRef.current.setSelectionRange(
+            nextCursorIndex,
+            nextCursorIndex
+          );
+        } catch {
+          // Ignore selection range errors on unsupported inputs
+        }
+      }
+    });
+  };
+
+  const handleComposerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (mentionTrigger.active && matchingMentionMembers.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedMentionIdx(
+          (prev) => (prev + 1) % matchingMentionMembers.length
+        );
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedMentionIdx(
+          (prev) =>
+            (prev - 1 + matchingMentionMembers.length) %
+            matchingMentionMembers.length
+        );
+        return;
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        const chosen =
+          matchingMentionMembers[selectedMentionIdx] ||
+          matchingMentionMembers[0];
+        if (chosen) {
+          e.preventDefault();
+          handleSelectMentionCandidate(chosen);
+          return;
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setCursorIndex(-1);
+        return;
+      }
+    }
+  };
+
   const handleSelectSlashCommandSuggestion = (cmd: SlashCommandDefinition) => {
     setInputText(cmd.sample);
+    setCursorIndex(cmd.sample.length);
     composerInputRef.current?.focus();
   };
 
@@ -224,6 +784,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       replyTo: replyingTo || undefined,
     });
     setInputText('');
+    setCursorIndex(0);
     setReplyingTo(null);
     onTypingSignal(false);
   };
@@ -255,6 +816,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     setEditingContent('');
   };
 
+  const handleLocalDeleteMessage = (messageId: string) => {
+    setDeletedMessageIds((prev) => {
+      const next = new Set(prev);
+      next.add(messageId);
+      return next;
+    });
+    setRealtimeMessages((prev) => prev.filter((m) => m.id !== messageId));
+    onDeleteMessage(messageId);
+  };
+
   const handleScrollToMessage = (messageId: string) => {
     const el = document.getElementById(`chat-msg-${messageId}`);
     if (el) {
@@ -271,14 +842,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const filteredMessages = useMemo(() => {
     const q = searchFilter.trim().toLowerCase();
-    if (!q) return messages;
-    return messages.filter(
+    if (!q) return orderedMessages;
+    return orderedMessages.filter(
       (m) =>
         m.content.toLowerCase().includes(q) ||
         m.authorName.toLowerCase().includes(q) ||
         (m.botName && m.botName.toLowerCase().includes(q))
     );
-  }, [messages, searchFilter]);
+  }, [orderedMessages, searchFilter]);
 
   const renderReactionToken = (reactionKey: string) => {
     if (reactionKey.startsWith(':') && reactionKey.endsWith(':')) {
@@ -312,7 +883,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               </h4>
             );
           }
-          const tokens = parseInlineMarkdown(line, emojiLookup);
+          const tokens = parseInlineMarkdown(
+            line,
+            emojiLookup,
+            knownMemberNames
+          );
           return (
             <p key={lineIdx} className="min-h-[1.25rem]">
               {tokens.map((seg, idx) => {
@@ -363,6 +938,24 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     >
                       {seg.value}
                     </a>
+                  );
+                }
+                if (seg.type === 'mention') {
+                  const isSelfMention = doesMessageMentionUser(
+                    seg.value,
+                    currentUsername
+                  );
+                  return (
+                    <span
+                      key={idx}
+                      className={`inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded font-semibold text-xs transition-colors ${
+                        isSelfMention
+                          ? 'bg-[#5865F2] text-white shadow-xs'
+                          : 'bg-[#5865F2]/25 text-indigo-200 hover:bg-[#5865F2] hover:text-white'
+                      }`}
+                    >
+                      {seg.value}
+                    </span>
                   );
                 }
                 return <React.Fragment key={idx}>{seg.value}</React.Fragment>;
@@ -456,7 +1049,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
                 {embed.streamerName && (
                   <span className="text-[11px] text-slate-400">
-                    Queued by <strong className="text-slate-200">{embed.streamerName}</strong>
+                    Queued by{' '}
+                    <strong className="text-slate-200">
+                      {embed.streamerName}
+                    </strong>
                   </span>
                 )}
               </div>
@@ -474,7 +1070,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   0
                 );
                 const pct =
-                  totalVotes > 0 ? Math.round((voters.length / totalVotes) * 100) : 0;
+                  totalVotes > 0
+                    ? Math.round((voters.length / totalVotes) * 100)
+                    : 0;
                 const hasVoted = voters.includes(currentUserId);
 
                 return (
@@ -498,7 +1096,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         <span>{opt}</span>
                       </span>
                       <span className="font-mono text-[11px] text-indigo-300">
-                        {voters.length} {voters.length === 1 ? 'vote' : 'votes'} ({pct}%)
+                        {voters.length} {voters.length === 1 ? 'vote' : 'votes'}{' '}
+                        ({pct}%)
                       </span>
                     </div>
                   </button>
@@ -564,7 +1163,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           <button
             type="button"
             onClick={onToggleMemberSidebar}
-            aria-label={showMemberSidebar ? 'Hide Member List' : 'Show Member List'}
+            aria-label={
+              showMemberSidebar ? 'Hide Member List' : 'Show Member List'
+            }
             title="Toggle Member List"
             className={`p-2 rounded-lg transition-colors cursor-pointer ${
               showMemberSidebar
@@ -606,7 +1207,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   </span>
                 )}
                 <span className="text-[11px] text-slate-400">
-                  Pinned by <strong className="text-slate-200">{sharedMiniPlayer.startedBy}</strong>
+                  Pinned by{' '}
+                  <strong className="text-slate-200">
+                    {sharedMiniPlayer.startedBy}
+                  </strong>
                 </span>
               </div>
               <h4 className="text-xs sm:text-sm font-bold text-white truncate">
@@ -641,7 +1245,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         {/* Channel Welcome Banner */}
         <div className="pb-4 border-b border-slate-800/70">
           <div className="w-11 h-11 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 mb-3">
-            {isDMMode ? <AtSign className="w-6 h-6" /> : <Hash className="w-6 h-6" />}
+            {isDMMode ? (
+              <AtSign className="w-6 h-6" />
+            ) : (
+              <Hash className="w-6 h-6" />
+            )}
           </div>
           <h3 className="text-lg font-bold text-white">
             {isDMMode
@@ -672,10 +1280,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               .join('')
               .slice(0, 2)
               .toUpperCase();
-            const formattedTime = new Date(msg.createdAt).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            });
+            const formattedTime = new Date(msg.createdAt).toLocaleTimeString(
+              [],
+              {
+                hour: '2-digit',
+                minute: '2-digit',
+              }
+            );
             const isAuthorSelf = msg.authorId === currentUserId;
             const canEditThisMessage = isAuthorSelf && !msg.isBot;
             const canDeleteThisMessage = isAuthorSelf || canDeleteMessages;
@@ -689,12 +1300,21 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             const reactionEntries = Object.entries(msg.reactions || {}).filter(
               ([_k, uids]) => Array.isArray(uids) && uids.length > 0
             );
+            const isMentioningCurrentUser = doesMessageMentionUser(
+              msg.content,
+              currentUsername
+            );
 
             return (
               <article
                 id={`chat-msg-${msg.id}`}
                 key={msg.id}
-                className="group relative flex flex-col py-1.5 px-2.5 -mx-2.5 rounded-xl hover:bg-slate-900/50 transition-all"
+                data-mentioned={isMentioningCurrentUser ? 'true' : 'false'}
+                className={`group relative flex flex-col py-1.5 px-2.5 -mx-2.5 rounded-xl transition-all ${
+                  isMentioningCurrentUser
+                    ? 'bg-amber-500/10 hover:bg-amber-500/15 border-l-4 border-[#5865F2] pl-3 shadow-[inset_0_0_24px_rgba(245,158,11,0.08)]'
+                    : 'hover:bg-slate-900/50'
+                }`}
               >
                 {/* Floating Message Hover Quick-Action Bar (Top-Right) */}
                 <div
@@ -758,7 +1378,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   {canDeleteThisMessage && (
                     <button
                       type="button"
-                      onClick={() => onDeleteMessage(msg.id)}
+                      onClick={() => handleLocalDeleteMessage(msg.id)}
                       title="Delete Message"
                       aria-label="Delete Message"
                       className="p-1.5 rounded-lg text-slate-300 hover:text-rose-400 hover:bg-rose-500/15 transition-colors cursor-pointer"
@@ -772,10 +1392,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 {msg.replyTo && (
                   <button
                     type="button"
-                    onClick={() => handleScrollToMessage(msg.replyTo!.messageId)}
+                    onClick={() =>
+                      handleScrollToMessage(msg.replyTo!.messageId)
+                    }
                     className="flex items-center gap-1.5 pl-4 pb-1 text-xs text-slate-400 hover:text-slate-200 transition-colors cursor-pointer text-left truncate"
                   >
-                    <span className="font-mono text-slate-500 select-none">╭──</span>
+                    <span className="font-mono text-slate-500 select-none">
+                      ╭──
+                    </span>
                     <span className="w-4 h-4 rounded-full bg-indigo-600/40 flex items-center justify-center text-[9px] font-bold text-white shrink-0 overflow-hidden">
                       {msg.replyTo.authorAvatar ? (
                         <img
@@ -970,7 +1594,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         >
                           <Star className="w-3.5 h-3.5 fill-current" />
                           <span>
-                            {isGifStarred(msg.gifUrl) ? 'Starred ⭐' : '⭐ Star'}
+                            {isGifStarred(msg.gifUrl)
+                              ? 'Starred ⭐'
+                              : '⭐ Star'}
                           </span>
                         </button>
                       </div>
@@ -1007,7 +1633,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                             <button
                               key={reactionKey}
                               type="button"
-                              onClick={() => onToggleReaction(msg.id, reactionKey)}
+                              onClick={() =>
+                                onToggleReaction(msg.id, reactionKey)
+                              }
                               aria-label={`Reaction ${reactionKey}, count ${userIds.length}`}
                               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
                                 hasReacted
@@ -1090,7 +1718,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             setPickerOpen(false);
           } else {
             setInputText(
-              (prev) => `${prev}${prev.endsWith(' ') || !prev ? '' : ' '}${shortcode} `
+              (prev) =>
+                `${prev}${prev.endsWith(' ') || !prev ? '' : ' '}${shortcode} `
             );
             setPickerOpen(false);
             composerInputRef.current?.focus();
@@ -1098,6 +1727,109 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         }}
         onCreateCustomEmoji={onCreateCustomEmoji}
       />
+
+      {/* User Mention Autocomplete Popup (when typing `@` in composer) */}
+      {mentionTrigger.active && matchingMentionMembers.length > 0 && (
+        <div
+          role="listbox"
+          aria-label="User Mention Autocomplete"
+          className="mx-5 mb-2 rounded-2xl bg-[#0B0F19] border border-[#5865F2]/50 shadow-2xl overflow-hidden z-30"
+        >
+          <div className="px-3.5 py-2 bg-[#5865F2]/15 border-b border-slate-800 flex items-center justify-between text-[11px] font-semibold text-indigo-200">
+            <span className="flex items-center gap-1.5">
+              <AtSign className="w-3.5 h-3.5 text-[#5865F2]" />
+              <span>
+                Members matching{' '}
+                <code className="font-mono text-white">
+                  @{mentionTrigger.query || '...'}
+                </code>
+              </span>
+            </span>
+            <span className="font-mono text-[10px] text-slate-400">
+              Click or press Enter to mention
+            </span>
+          </div>
+          <div className="divide-y divide-slate-800/60 max-h-56 overflow-y-auto">
+            {matchingMentionMembers.map((member, idx) => {
+              const memberInitials = member.username
+                .split(/\s+/)
+                .map((w) => w[0])
+                .join('')
+                .slice(0, 2)
+                .toUpperCase();
+              const isSelected = idx === selectedMentionIdx;
+              const statusDotClass =
+                member.status === 'online'
+                  ? 'bg-emerald-500'
+                  : member.status === 'idle'
+                  ? 'bg-amber-400'
+                  : member.status === 'dnd'
+                  ? 'bg-rose-500'
+                  : 'bg-slate-500';
+
+              return (
+                <button
+                  key={member.id || member.username}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => handleSelectMentionCandidate(member)}
+                  className={`w-full px-3.5 py-2 flex items-center justify-between gap-3 transition-colors text-left cursor-pointer ${
+                    isSelected
+                      ? 'bg-[#5865F2]/25 text-white'
+                      : 'hover:bg-slate-800/70 text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="relative shrink-0">
+                      <div
+                        className="w-7 h-7 rounded-full overflow-hidden flex items-center justify-center text-[10px] font-bold text-white"
+                        style={{
+                          backgroundColor: member.roleColor || '#5865F2',
+                        }}
+                      >
+                        {member.avatarUrl ? (
+                          <img
+                            src={member.avatarUrl}
+                            alt={member.username}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <span>{memberInitials}</span>
+                        )}
+                      </div>
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full border-2 border-[#0B0F19] absolute -bottom-0.5 -right-0.5 ${statusDotClass}`}
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-semibold text-white truncate">
+                          {member.username}
+                        </span>
+                        {member.id === currentUserId && (
+                          <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-[9px] font-semibold text-indigo-300">
+                            YOU
+                          </span>
+                        )}
+                      </div>
+                      {(member.customStatusText || member.customStatusEmoji) && (
+                        <p className="text-[10px] text-slate-400 truncate">
+                          {member.customStatusEmoji} {member.customStatusText}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <span className="font-mono text-[11px] text-slate-400 shrink-0">
+                    {member.uniqueTag || `@${member.username}`}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Slash Command Autocomplete Popup (when typing `/` in composer) */}
       {matchingSlashCommands.length > 0 && (
@@ -1149,7 +1881,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       {/* Real-Time Typing Indicator */}
       {typingUsers.length > 0 && (
         <div className="px-6 py-1 text-[11px] text-indigo-300 font-medium">
-          {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing...
+          {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'}{' '}
+          typing...
         </div>
       )}
 
@@ -1160,8 +1893,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             <CornerUpLeft className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
             <span className="truncate">
               Replying to{' '}
-              <strong className="text-indigo-300">@{replyingTo.authorName}</strong>:{' '}
-              <span className="text-slate-400">{replyingTo.contentPreview}</span>
+              <strong className="text-indigo-300">
+                @{replyingTo.authorName}
+              </strong>
+              : <span className="text-slate-400">{replyingTo.contentPreview}</span>
             </span>
           </div>
           <button
@@ -1195,10 +1930,19 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             type="text"
             value={inputText}
             onChange={handleInputChange}
-            aria-label={`Message ${isDMMode ? `@${channelName}` : `#${channelName}`}`}
+            onKeyDown={handleComposerKeyDown}
+            onClick={(e) => {
+              const target = e.currentTarget;
+              if (typeof target.selectionStart === 'number') {
+                setCursorIndex(target.selectionStart);
+              }
+            }}
+            aria-label={`Message ${
+              isDMMode ? `@${channelName}` : `#${channelName}`
+            }`}
             placeholder={`Message ${
               isDMMode ? `@${channelName}` : `#${channelName}`
-            } (Type / for YouTube & Live Bots, **bold**, :emoji:)`}
+            } (Type @ to mention, / for Bots, **bold**, :emoji:)`}
             className="flex-1 bg-transparent text-sm text-white placeholder-slate-400 focus:outline-none min-w-0"
           />
 
@@ -1217,7 +1961,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               aria-label="Open GIF Picker"
               title="Trending & Custom GIFs"
               className={`px-2 py-1 rounded-lg text-xs font-mono font-semibold transition-colors cursor-pointer ${
-                pickerOpen && (pickerTab === 'trending' || pickerTab === 'favorites')
+                pickerOpen &&
+                (pickerTab === 'trending' || pickerTab === 'favorites')
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-300 hover:text-white hover:bg-slate-800'
               }`}

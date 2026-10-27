@@ -100,6 +100,39 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "channelId", "serverId", "authorId", "authorName", "content", "createdAt"]
+    },
+    "DirectMessage": {
+      "title": "DirectMessage",
+      "description": "A real-time peer-to-peer direct message between two Wapper users.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "conversationId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "channelId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "serverId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "receiverId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "authorId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "authorName": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "authorAvatar": { "type": "string", "maxLength": 500000 },
+        "content": { "type": "string", "maxLength": 4000 },
+        "gifUrl": { "type": "string", "maxLength": 500000 },
+        "attachmentUrl": { "type": "string", "maxLength": 600000 },
+        "attachmentAnalysis": { "type": "string", "maxLength": 4000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "conversationId",
+        "channelId",
+        "serverId",
+        "senderId",
+        "receiverId",
+        "authorId",
+        "authorName",
+        "content",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -110,6 +143,10 @@
     "/friends/{friendshipId}": {
       "schema": "FriendRelationship",
       "description": "User friend relationship documents."
+    },
+    "/direct_messages/{messageId}": {
+      "schema": "DirectMessage",
+      "description": "Real-time direct messages between two Wapper users."
     },
     "/servers/{serverId}": {
       "schema": "Server",

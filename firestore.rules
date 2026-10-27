@@ -101,6 +101,68 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidDirectMessage(data) {
+      return data.keys().hasAll([
+          'id',
+          'conversationId',
+          'channelId',
+          'serverId',
+          'senderId',
+          'receiverId',
+          'authorId',
+          'authorName',
+          'content',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'conversationId',
+          'channelId',
+          'serverId',
+          'senderId',
+          'receiverId',
+          'authorId',
+          'authorName',
+          'authorAvatar',
+          'authorRoleColor',
+          'content',
+          'gifUrl',
+          'attachmentUrl',
+          'attachmentAnalysis',
+          'replyTo',
+          'reactions',
+          'isBot',
+          'botName',
+          'botEmbed',
+          'isEdited',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.conversationId) &&
+        isValidId(data.channelId) &&
+        isValidId(data.serverId) &&
+        isValidId(data.senderId) &&
+        isValidId(data.receiverId) &&
+        isValidId(data.authorId) &&
+        data.senderId == data.authorId &&
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 64 &&
+        (!('authorAvatar' in data) || (data.authorAvatar is string && data.authorAvatar.size() <= 500000)) &&
+        (!('authorRoleColor' in data) || (data.authorRoleColor is string && data.authorRoleColor.size() <= 16)) &&
+        data.content is string && data.content.size() <= 4000 &&
+        (!('gifUrl' in data) || (data.gifUrl is string && data.gifUrl.size() <= 500000)) &&
+        (!('attachmentUrl' in data) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 600000)) &&
+        (!('attachmentAnalysis' in data) || (data.attachmentAnalysis is string && data.attachmentAnalysis.size() <= 4000)) &&
+        (!('replyTo' in data) || (data.replyTo is map && data.replyTo.size() <= 10)) &&
+        (!('reactions' in data) || (data.reactions is map && data.reactions.size() <= 50)) &&
+        (!('isBot' in data) || data.isBot is bool) &&
+        (!('botName' in data) || (data.botName is string && data.botName.size() <= 64)) &&
+        (!('botEmbed' in data) || (data.botEmbed is map && data.botEmbed.size() <= 15)) &&
+        (!('isEdited' in data) || data.isEdited is bool) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp) &&
+        data.createdAt is timestamp;
+    }
+
     function isValidServer(data) {
       return data.keys().hasAll(['id', 'name', 'ownerId', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly([
@@ -281,6 +343,53 @@ service cloud.firestore {
       allow delete: if isSignedIn() &&
         isValidId(friendshipId) &&
         (existing().userId == request.auth.uid || existing().friendId == request.auth.uid);
+    }
+
+    // 2b. Real-Time Direct Messages (/direct_messages/{messageId})
+    match /direct_messages/{messageId} {
+      allow get: if isSignedIn() &&
+        isValidId(messageId) &&
+        (resource == null || existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
+
+      allow list: if isSignedIn() &&
+        (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+        isValidId(messageId) &&
+        isValidDirectMessage(incoming()) &&
+        incoming().id == messageId &&
+        incoming().senderId == request.auth.uid &&
+        incoming().authorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/profiles/$(request.auth.uid));
+
+      allow update: if isSignedIn() &&
+        isValidDirectMessage(incoming()) &&
+        isValidId(messageId) &&
+        (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid) &&
+        incoming().id == existing().id &&
+        incoming().conversationId == existing().conversationId &&
+        incoming().channelId == existing().channelId &&
+        incoming().serverId == existing().serverId &&
+        incoming().senderId == existing().senderId &&
+        incoming().receiverId == existing().receiverId &&
+        incoming().authorId == existing().authorId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            incoming().content == existing().content &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'updatedAt'])
+          ) ||
+          (
+            existing().senderId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['content', 'isEdited', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isSignedIn() &&
+        isValidId(messageId) &&
+        (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
     }
 
     // 3. Community Servers (/servers/{serverId})

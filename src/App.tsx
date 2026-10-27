@@ -64,7 +64,11 @@ import {
   getUserHighestRole,
   hasServerPermission,
   isFounderUser,
+  buildDMConversationId,
+  sortMessagesByCreatedAtAsc,
+  doesMessageMentionUser,
 } from './utils/chatLogic';
+import { playNotificationPing } from './utils/soundNotification';
 import {
   listenToAuthChanges,
   signInWithGoogle,
@@ -87,6 +91,7 @@ import {
   updateMessageReactionsInCloud,
   updateMessageContentInCloud,
   deleteMessageFromCloud,
+  subscribeToLocalMessageRealtimeBus,
 } from './supabaseClient';
 
 const STATUS_DOT_COLOR: Record<WapperProfile['status'], string> = {
@@ -144,7 +149,7 @@ const DEFAULT_COMMUNITY_CHANNELS: ChannelItem[] = [
 ];
 
 function getDirectMessageChannelId(userA: string, userB: string): string {
-  return `dm_${[userA, userB].sort().join('_')}`;
+  return buildDMConversationId(userA, userB);
 }
 
 function loadInitialServers(): ServerItem[] {
@@ -855,90 +860,133 @@ export default function App() {
     return activeChannelId;
   }, [isDMMode, isFriendsDashboardActive, activeDMPeerId, activeChannelId, currentUser]);
 
-  // Subscribe to Firestore messages for the active channel when signed in
+  // Notify Socket.io when switching active channel or DM room
   useEffect(() => {
     if (!currentUser || !effectiveChannelId) return;
     socket?.emit('join-channel', {
       channelId: effectiveChannelId,
       userId: currentUser.id,
     });
+  }, [socket, effectiveChannelId, currentUser?.id]);
 
-    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+  // Global Real-Time Notification Sound Listener for DMs & Mentions when viewing a different tab or view
+  useEffect(() => {
+    if (!currentUser) return;
+    const seenGlobalIds = new Set<string>();
+    let initializedFirestoreDMs = false;
 
-    const cleanServerId = sanitizeId(isDMMode ? 'srv_dm' : activeServerId);
-    const cleanChanId = sanitizeId(effectiveChannelId);
-    const msgsRef = collection(
-      db,
-      'servers',
-      cleanServerId,
-      'channels',
-      cleanChanId,
-      'messages'
-    );
+    const unsubscribeBus = subscribeToLocalMessageRealtimeBus((event) => {
+      if (event.type !== 'UPSERT_MESSAGE') return;
+      const m = event.message;
+      if (seenGlobalIds.has(m.id)) return;
+      seenGlobalIds.add(m.id);
 
-    const unsubMessages = onSnapshot(
-      msgsRef,
-      (snap) => {
-        if (snap.empty) return;
-        const remoteMsgs: ChatMessageItem[] = [];
-        snap.forEach((docSnap) => {
-          const d = docSnap.data();
-          const createdIso =
-            d.createdAt && typeof d.createdAt.toDate === 'function'
-              ? d.createdAt.toDate().toISOString()
-              : new Date().toISOString();
-          remoteMsgs.push({
-            id: String(d.id || docSnap.id),
-            channelId: effectiveChannelId,
-            serverId: isDMMode ? 'srv_dm' : activeServerId,
-            authorId: String(d.authorId || ''),
-            authorName: String(d.authorName || 'WapperUser'),
-            authorAvatar: String(d.authorAvatar || ''),
-            authorRoleColor: String(d.authorRoleColor || '#5865F2'),
-            content: String(d.content || ''),
-            gifUrl: d.gifUrl ? String(d.gifUrl) : undefined,
-            attachmentUrl: d.attachmentUrl ? String(d.attachmentUrl) : undefined,
-            attachmentAnalysis: d.attachmentAnalysis
-              ? String(d.attachmentAnalysis)
-              : undefined,
-            replyTo: d.replyTo ? (d.replyTo as MessageReplyMetadata) : undefined,
-            reactions: d.reactions
-              ? (d.reactions as Record<string, string[]>)
-              : undefined,
-            isBot: Boolean(d.isBot),
-            botName: d.botName ? String(d.botName) : undefined,
-            botEmbed: d.botEmbed ? (d.botEmbed as BotEmbedPayload) : undefined,
-            isEdited: Boolean(d.isEdited),
-            createdAt: createdIso,
+      const isMention = doesMessageMentionUser(
+        m.content,
+        currentUser.username,
+        currentUser.uniqueTag
+      );
+      const isIncomingDM =
+        Boolean(m.receiverId && sanitizeId(m.receiverId) === sanitizeId(currentUser.id)) &&
+        sanitizeId(m.authorId) !== sanitizeId(currentUser.id);
+      const isLookingAtDifferentTab =
+        (typeof document !== 'undefined' && document.hidden) ||
+        isFriendsDashboardActive ||
+        sanitizeId(m.channelId) !== sanitizeId(effectiveChannelId);
+
+      if (isMention) {
+        playNotificationPing('mention');
+      } else if (isIncomingDM && isLookingAtDifferentTab) {
+        playNotificationPing('dm');
+      }
+    });
+
+    let unsubFirestoreIncomingDMs: (() => void) | null = null;
+    if (auth.currentUser && auth.currentUser.emailVerified) {
+      const authUid = sanitizeId(auth.currentUser.uid);
+      const incomingDMQuery = query(
+        collection(db, 'direct_messages'),
+        where('receiverId', '==', authUid)
+      );
+      unsubFirestoreIncomingDMs = onSnapshot(
+        incomingDMQuery,
+        (snap) => {
+          if (!initializedFirestoreDMs) {
+            snap.forEach((d) => seenGlobalIds.add(d.id));
+            initializedFirestoreDMs = true;
+            return;
+          }
+          snap.docChanges().forEach((change) => {
+            if (change.type !== 'added') return;
+            const docId = change.doc.id;
+            if (seenGlobalIds.has(docId)) return;
+            seenGlobalIds.add(docId);
+
+            const data = change.doc.data();
+            const senderId = String(data.senderId || data.authorId || '');
+            if (sanitizeId(senderId) === authUid) return;
+
+            const content = String(data.content || '');
+            const channelOrConvId = String(
+              data.conversationId || data.channelId || ''
+            );
+            const isLookingAtDifferentTab =
+              (typeof document !== 'undefined' && document.hidden) ||
+              isFriendsDashboardActive ||
+              sanitizeId(channelOrConvId) !== sanitizeId(effectiveChannelId);
+
+            if (
+              doesMessageMentionUser(
+                content,
+                currentUser.username,
+                currentUser.uniqueTag
+              )
+            ) {
+              playNotificationPing('mention');
+            } else if (isLookingAtDifferentTab) {
+              playNotificationPing('dm');
+            }
           });
-        });
-
-        remoteMsgs.sort(
-          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-        );
-
-        setMessagesByChannel((prev) => {
-          const existing = prev[effectiveChannelId] || [];
-          const map = new Map<string, ChatMessageItem>();
-          for (const m of existing) map.set(m.id, m);
-          for (const rm of remoteMsgs) map.set(rm.id, rm);
-          const merged = Array.from(map.values()).sort(
-            (a, b) =>
-              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-          );
-          return {
-            ...prev,
-            [effectiveChannelId]: merged,
-          };
-        });
-      },
-      () => {}
-    );
+        },
+        () => {}
+      );
+    }
 
     return () => {
-      unsubMessages();
+      unsubscribeBus();
+      if (unsubFirestoreIncomingDMs) unsubFirestoreIncomingDMs();
     };
-  }, [socket, effectiveChannelId, isDMMode, activeServerId, currentUser?.id]);
+  }, [currentUser, effectiveChannelId, isFriendsDashboardActive]);
+
+  // Synchronize real-time messages streamed by ChatArea's Firestore `onSnapshot` listeners
+  const handleRealtimeMessagesSync = useCallback(
+    (targetChannelId: string, syncedMessages: ChatMessageItem[]) => {
+      setMessagesByChannel((prev) => {
+        const existing = prev[targetChannelId] || [];
+        const merged = sortMessagesByCreatedAtAsc([
+          ...existing,
+          ...syncedMessages,
+        ]);
+        if (
+          existing.length === merged.length &&
+          existing.every(
+            (m, idx) =>
+              m.id === merged[idx]?.id &&
+              m.content === merged[idx]?.content &&
+              JSON.stringify(m.reactions || {}) ===
+                JSON.stringify(merged[idx]?.reactions || {})
+          )
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [targetChannelId]: merged,
+        };
+      });
+    },
+    []
+  );
 
   const activeServer = useMemo(
     () => servers.find((s) => s.id === activeServerId) || servers[0],
@@ -1234,11 +1282,21 @@ export default function App() {
         currentUser.profileThemeColor ||
         '#5865F2';
 
+      const dmReceiverId =
+        isDMMode && activeDMPeerId ? activeDMPeerId : undefined;
+      const dmConversationId =
+        isDMMode && dmReceiverId
+          ? buildDMConversationId(currentUser.id, dmReceiverId)
+          : undefined;
+
       if (slashOutcome.isSlashCommand && !slashOutcome.error && slashOutcome.botEmbed) {
         const botMsg: ChatMessageItem = {
           id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           channelId: effectiveChannelId,
           serverId: isDMMode ? 'srv_dm' : activeServerId,
+          conversationId: dmConversationId,
+          senderId: currentUser.id,
+          receiverId: dmReceiverId,
           authorId: currentUser.id,
           authorName: slashOutcome.botName || 'Wapper Bot',
           authorAvatar: '',
@@ -1256,7 +1314,7 @@ export default function App() {
           const list = prev[effectiveChannelId] || [];
           return {
             ...prev,
-            [effectiveChannelId]: [...list, botMsg],
+            [effectiveChannelId]: sortMessagesByCreatedAtAsc([...list, botMsg]),
           };
         });
 
@@ -1266,6 +1324,9 @@ export default function App() {
           id: botMsg.id,
           channelId: botMsg.channelId,
           serverId: botMsg.serverId,
+          conversationId: botMsg.conversationId,
+          senderId: botMsg.senderId,
+          receiverId: botMsg.receiverId,
           authorId: botMsg.authorId,
           authorName: botMsg.authorName,
           authorRoleColor: botMsg.authorRoleColor,
@@ -1275,6 +1336,7 @@ export default function App() {
           isBot: true,
           botName: botMsg.botName,
           botEmbed: botMsg.botEmbed,
+          createdAt: botMsg.createdAt,
         }).catch(() => {});
 
         // If `/live` was triggered, update the user's status badge to `🔴 LIVE`
@@ -1294,6 +1356,9 @@ export default function App() {
         id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         channelId: effectiveChannelId,
         serverId: isDMMode ? 'srv_dm' : activeServerId,
+        conversationId: dmConversationId,
+        senderId: currentUser.id,
+        receiverId: dmReceiverId,
         authorId: currentUser.id,
         authorName: currentUser.username,
         authorAvatar: currentUser.avatarUrl,
@@ -1314,7 +1379,7 @@ export default function App() {
         if (list.some((m) => m.id === newMsg.id)) return prev;
         return {
           ...prev,
-          [effectiveChannelId]: [...list, newMsg],
+          [effectiveChannelId]: sortMessagesByCreatedAtAsc([...list, newMsg]),
         };
       });
 
@@ -1324,20 +1389,27 @@ export default function App() {
         id: newMsg.id,
         channelId: newMsg.channelId,
         serverId: newMsg.serverId,
+        conversationId: newMsg.conversationId,
+        senderId: newMsg.senderId,
+        receiverId: newMsg.receiverId,
         authorId: newMsg.authorId,
         authorName: newMsg.authorName,
         authorAvatar: newMsg.authorAvatar,
+        authorEmail: newMsg.authorEmail,
         authorRoleColor: newMsg.authorRoleColor,
+        authorIsLive: newMsg.authorIsLive,
         content: newMsg.content,
         gifUrl: newMsg.gifUrl,
         attachmentUrl: newMsg.attachmentUrl,
         attachmentAnalysis: newMsg.attachmentAnalysis,
         replyTo: newMsg.replyTo,
+        createdAt: newMsg.createdAt,
       }).catch(() => {});
     },
     [
       effectiveChannelId,
       isDMMode,
+      activeDMPeerId,
       activeServerId,
       currentUser,
       currentUserHighestRole,
@@ -1386,6 +1458,7 @@ export default function App() {
           channelId: effectiveChannelId,
           messageId,
           reactions: updatedReactionsForCloud,
+          isDMMode,
         }).catch(() => {});
       }
     },
@@ -1413,6 +1486,7 @@ export default function App() {
         channelId: effectiveChannelId,
         messageId,
         content: newContent,
+        isDMMode,
       }).catch(() => {});
     },
     [currentUser, effectiveChannelId, isDMMode, activeServerId]
@@ -1434,6 +1508,7 @@ export default function App() {
         serverId: isDMMode ? 'srv_dm' : activeServerId,
         channelId: effectiveChannelId,
         messageId,
+        isDMMode,
       }).catch(() => {});
     },
     [currentUser, effectiveChannelId, isDMMode, activeServerId]
@@ -2070,9 +2145,11 @@ export default function App() {
                 : activeChannel?.topic || ''
             }
             isDMMode={isDMMode}
+            dmPeerId={activeDMPeer?.id || activeDMPeerId}
             serverId={activeServerId}
             currentUserId={currentUser.id}
             currentUsername={currentUser.username}
+            serverMembers={allServerMembers}
             canDeleteMessages={canDeleteMessages}
             canManageEmojis={canManageEmojis}
             messages={messagesByChannel[effectiveChannelId] || []}
@@ -2087,6 +2164,7 @@ export default function App() {
             onToggleReaction={handleToggleReaction}
             onEditMessage={handleEditMessage}
             onDeleteMessage={handleDeleteMessage}
+            onRealtimeMessagesSync={handleRealtimeMessagesSync}
             onToggleFavoriteGif={handleToggleFavoriteGif}
             onTypingSignal={handleTypingSignal}
             onCreateCustomEmoji={handleCreateCustomEmoji}

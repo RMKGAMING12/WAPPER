@@ -14,10 +14,12 @@ test('Dirty Dozen Security Invariants in firestore.rules', () => {
   // 3. Strict key allowlisting (hasAll + hasOnly) for all collections
   assert.match(rulesContent, /function isValidProfile/);
   assert.match(rulesContent, /function isValidFriendRelationship/);
+  assert.match(rulesContent, /function isValidDirectMessage/);
   assert.match(rulesContent, /function isValidServer/);
   assert.match(rulesContent, /function isValidServerMember/);
   assert.match(rulesContent, /function isValidChannel/);
   assert.match(rulesContent, /function isValidMessage/);
+  assert.match(rulesContent, /match \/direct_messages\/\{messageId\}/);
 
   // 4. AffectedKeys().hasOnly() enforced on updates (including message reactions and edits)
   assert.match(rulesContent, /affectedKeys\(\)\.hasOnly\(\[\s*'username'/);

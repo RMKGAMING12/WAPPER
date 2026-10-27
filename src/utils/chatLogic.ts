@@ -6,9 +6,27 @@
  */
 
 export interface MarkdownSegment {
-  type: 'text' | 'bold' | 'italic' | 'code' | 'emoji' | 'link';
+  type: 'text' | 'bold' | 'italic' | 'code' | 'emoji' | 'link' | 'mention';
   value: string;
   emojiUrl?: string;
+}
+
+export interface MentionCandidate {
+  id: string;
+  username: string;
+  uniqueTag?: string;
+  avatarUrl?: string;
+  status?: PresenceStatus;
+  roleColor?: string;
+  customStatusEmoji?: string;
+  customStatusText?: string;
+}
+
+export interface ActiveMentionTrigger {
+  active: boolean;
+  query: string;
+  startIndex: number;
+  endIndex: number;
 }
 
 export interface ChannelItem {
@@ -865,6 +883,10 @@ export function sanitizeChannelName(raw: string, type: 'text' | 'voice'): string
   return trimmed;
 }
 
+function escapeRegexChars(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Parses a line of chat text into inline tokens supporting:
  * - `**bold**`
@@ -872,16 +894,33 @@ export function sanitizeChannelName(raw: string, type: 'text' | 'voice'): string
  * - `` `inline code` ``
  * - `:custom_emoji:`
  * - `https://...` links
+ * - `@Username` mentions
  */
 export function parseInlineMarkdown(
   input: string,
-  emojiLookup: Record<string, string> = {}
+  emojiLookup: Record<string, string> = {},
+  mentionNames: string[] = []
 ): MarkdownSegment[] {
   if (!input) return [];
 
+  const cleanedMentions = Array.from(
+    new Set(
+      mentionNames
+        .map((n) => (n || '').trim())
+        .filter((n) => n.length > 0)
+    )
+  ).sort((a, b) => b.length - a.length);
+
+  const mentionAlternation =
+    cleanedMentions.length > 0
+      ? `|@(?:${cleanedMentions.map(escapeRegexChars).join('|')})(?=$|[\\s.,!?:;)\\]"'])`
+      : '';
+
   const segments: MarkdownSegment[] = [];
-  const tokenRegex =
-    /(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`\n]+`|:([a-zA-Z0-9_]{2,32}):|https?:\/\/[^\s<]+)/g;
+  const tokenRegex = new RegExp(
+    `(\\*\\*[^*]+\\*\\*|\\*[^*\\n]+\\*|\`[^\`\\n]+\`|:([a-zA-Z0-9_]{2,32}):|https?:\\/\\/[^\\s<]+${mentionAlternation}|@[a-zA-Z0-9_.\\-]+(?:#\\d{4})?)`,
+    'g'
+  );
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -923,6 +962,19 @@ export function parseInlineMarkdown(
         type: 'link',
         value: fullToken,
       });
+    } else if (fullToken.startsWith('@') && fullToken.length > 1) {
+      const prevChar = match.index > 0 ? input[match.index - 1] : '';
+      if (!prevChar || /[\s([{"']/.test(prevChar)) {
+        segments.push({
+          type: 'mention',
+          value: fullToken,
+        });
+      } else {
+        segments.push({
+          type: 'text',
+          value: fullToken,
+        });
+      }
     } else {
       segments.push({
         type: 'text',
@@ -1040,3 +1092,314 @@ export function parseInviteInput(rawInput: string): {
     inviteTarget: cleanedCode,
   };
 }
+
+/**
+ * Generates a deterministic Direct Message conversation ID for any pair of user IDs.
+ * Ensures User A -> User B and User B -> User A always resolve to the exact same ID.
+ */
+export function buildDMConversationId(userA: string, userB: string): string {
+  const cleanA = sanitizeId((userA || '').trim());
+  const cleanB = sanitizeId((userB || '').trim());
+  return `dm_${[cleanA, cleanB].sort().join('_')}`;
+}
+
+/**
+ * Checks whether a message document belongs to the active DM conversation pair
+ * between `userA` and `userB`. Matches explicit `(senderId, receiverId)` pairs
+ * in either direction as well as deterministic `conversationId` / `channelId`.
+ */
+export function isMessageInDMConversation(
+  msg: {
+    senderId?: string | null;
+    receiverId?: string | null;
+    authorId?: string | null;
+    conversationId?: string | null;
+    channelId?: string | null;
+  },
+  userA: string,
+  userB: string
+): boolean {
+  const cleanA = sanitizeId((userA || '').trim());
+  const cleanB = sanitizeId((userB || '').trim());
+  if (!cleanA || !cleanB) return false;
+
+  const sender = sanitizeId((msg.senderId || msg.authorId || '').trim());
+  const receiver = msg.receiverId ? sanitizeId(msg.receiverId.trim()) : '';
+
+  if (sender && receiver) {
+    if (
+      (sender === cleanA && receiver === cleanB) ||
+      (sender === cleanB && receiver === cleanA)
+    ) {
+      return true;
+    }
+  }
+
+  const expectedConvId = buildDMConversationId(cleanA, cleanB);
+  if (msg.conversationId && sanitizeId(msg.conversationId) === expectedConvId) {
+    return true;
+  }
+  if (msg.channelId && sanitizeId(msg.channelId) === expectedConvId) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Safely converts a Firestore Timestamp, ISO date string, numeric epoch, or
+ * `{ seconds, nanoseconds }` object into epoch milliseconds for deterministic sorting.
+ */
+export function parseMessageTimestampMs(value: unknown, fallbackMs = 0): number {
+  if (!value) return fallbackMs;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : fallbackMs;
+  }
+  if (typeof value === 'object') {
+    const maybeTimestamp = value as {
+      toMillis?: () => number;
+      toDate?: () => Date;
+      seconds?: number;
+      nanoseconds?: number;
+    };
+    if (typeof maybeTimestamp.toMillis === 'function') {
+      return maybeTimestamp.toMillis();
+    }
+    if (typeof maybeTimestamp.toDate === 'function') {
+      return maybeTimestamp.toDate().getTime();
+    }
+    if (typeof maybeTimestamp.seconds === 'number') {
+      const nanos =
+        typeof maybeTimestamp.nanoseconds === 'number'
+          ? maybeTimestamp.nanoseconds
+          : 0;
+      return maybeTimestamp.seconds * 1000 + Math.floor(nanos / 1_000_000);
+    }
+  }
+  return fallbackMs;
+}
+
+/**
+ * Deduplicates messages by `id` and sorts them in strict ascending order by `createdAt`
+ * in memory so Firestore queries never require a complex multi-field Composite Index.
+ */
+export function sortMessagesByCreatedAtAsc<
+  T extends { id: string; createdAt: string | number }
+>(messages: T[]): T[] {
+  const byId = new Map<string, T>();
+  for (const item of messages) {
+    if (!item || !item.id) continue;
+    const existing = byId.get(item.id);
+    if (!existing) {
+      byId.set(item.id, item);
+    } else {
+      // Merge reactions/edits from latest snapshot
+      byId.set(item.id, { ...existing, ...item });
+    }
+  }
+
+  return Array.from(byId.values()).sort((a, b) => {
+    const timeA = parseMessageTimestampMs(a.createdAt, 0);
+    const timeB = parseMessageTimestampMs(b.createdAt, 0);
+    if (timeA !== timeB) {
+      return timeA - timeB;
+    }
+    return a.id.localeCompare(b.id);
+  });
+}
+
+/**
+ * Detects whether the user is currently typing an `@` mention token in the chat composer.
+ * Triggers when `@` is at the start of the input or preceded by whitespace, and the user
+ * has not yet completed the mention with a trailing space.
+ */
+export function extractMentionQuery(
+  inputText: string,
+  cursorIndex?: number
+): ActiveMentionTrigger {
+  const inactive: ActiveMentionTrigger = {
+    active: false,
+    query: '',
+    startIndex: -1,
+    endIndex: -1,
+  };
+
+  if (typeof inputText !== 'string' || inputText.length === 0) {
+    return inactive;
+  }
+
+  // Do not trigger mention popup when typing a slash command at the very start
+  if (inputText.startsWith('/') && !inputText.includes(' @')) {
+    return inactive;
+  }
+
+  const effectiveCursor =
+    typeof cursorIndex === 'number' && cursorIndex >= 0
+      ? Math.min(cursorIndex, inputText.length)
+      : inputText.length;
+
+  const textUpToCursor = inputText.slice(0, effectiveCursor);
+  const atIndex = textUpToCursor.lastIndexOf('@');
+  if (atIndex === -1) {
+    return inactive;
+  }
+
+  // `@` must be at the start of the message or preceded by whitespace / opening paren
+  if (atIndex > 0) {
+    const prevChar = textUpToCursor[atIndex - 1];
+    if (!/[\s(]/.test(prevChar)) {
+      return inactive;
+    }
+  }
+
+  const rawQuery = textUpToCursor.slice(atIndex + 1);
+
+  // If the user has already finished the mention with a trailing space (e.g. `@Username `), close popup
+  if (rawQuery.endsWith(' ') || rawQuery.includes('\n')) {
+    return inactive;
+  }
+
+  // Allow empty query (`@`), single word (`@Mayank`), or two-part display name (`@Mayank R`)
+  if (!/^[a-zA-Z0-9_.\-]{0,32}(?:\s[a-zA-Z0-9_.\-]{1,32})?$/.test(rawQuery)) {
+    return inactive;
+  }
+
+  return {
+    active: true,
+    query: rawQuery,
+    startIndex: atIndex,
+    endIndex: effectiveCursor,
+  };
+}
+
+/**
+ * Filters and ranks active server members for the `@` mention autocomplete popup.
+ */
+export function filterMentionCandidates<T extends MentionCandidate>(
+  members: T[],
+  query: string,
+  limit = 8
+): T[] {
+  if (!Array.isArray(members) || members.length === 0) return [];
+
+  const normalizedQuery = (query || '').trim().toLowerCase();
+  const byKey = new Map<string, T>();
+
+  for (const m of members) {
+    if (!m || !m.username || !m.username.trim()) continue;
+    const key = m.id || m.username.trim().toLowerCase();
+    if (!byKey.has(key)) {
+      byKey.set(key, m);
+    }
+  }
+
+  const matches = Array.from(byKey.values()).filter((member) => {
+    if (!normalizedQuery) return true;
+    const nameMatch = member.username.toLowerCase().includes(normalizedQuery);
+    const tagMatch = member.uniqueTag
+      ? member.uniqueTag.toLowerCase().includes(normalizedQuery)
+      : false;
+    return nameMatch || tagMatch;
+  });
+
+  return matches
+    .sort((a, b) => {
+      const aOnline = a.status !== 'offline' ? 0 : 1;
+      const bOnline = b.status !== 'offline' ? 0 : 1;
+      if (aOnline !== bOnline) return aOnline - bOnline;
+
+      if (normalizedQuery) {
+        const aStarts = a.username.toLowerCase().startsWith(normalizedQuery)
+          ? 0
+          : 1;
+        const bStarts = b.username.toLowerCase().startsWith(normalizedQuery)
+          ? 0
+          : 1;
+        if (aStarts !== bStarts) return aStarts - bStarts;
+      }
+
+      return a.username.localeCompare(b.username);
+    })
+    .slice(0, Math.max(1, limit));
+}
+
+/**
+ * Injects `@Username ` into the chat composer input at the active `@` mention range.
+ */
+export function injectMentionIntoInput(
+  inputText: string,
+  username: string,
+  startIndex: number,
+  endIndex: number
+): { text: string; nextCursorIndex: number } {
+  const cleanUsername = (username || '').trim();
+  if (!cleanUsername || startIndex < 0 || startIndex > inputText.length) {
+    return {
+      text: inputText,
+      nextCursorIndex: inputText.length,
+    };
+  }
+
+  const safeEnd = Math.max(startIndex, Math.min(endIndex, inputText.length));
+  const before = inputText.slice(0, startIndex);
+  const after = inputText.slice(safeEnd);
+  const needsTrailingSpace = !after.startsWith(' ');
+  const mentionToken = `@${cleanUsername}${needsTrailingSpace ? ' ' : ''}`;
+  const nextText = `${before}${mentionToken}${after}`.slice(
+    0,
+    BLUEPRINT_LIMITS.MESSAGE_CONTENT_MAX_LEN
+  );
+  const nextCursorIndex = Math.min(
+    before.length + mentionToken.length,
+    nextText.length
+  );
+
+  return {
+    text: nextText,
+    nextCursorIndex,
+  };
+}
+
+/**
+ * Checks whether a chat message text contains `@` followed by the current logged-in user's
+ * display name (or uniqueTag, or `@everyone` / `@here`), matching Discord's mention rules.
+ */
+export function doesMessageMentionUser(
+  content: string,
+  currentUsername: string,
+  currentUniqueTag?: string
+): boolean {
+  if (!content || !content.includes('@')) return false;
+
+  const cleanUsername = (currentUsername || '').trim();
+  if (!cleanUsername) return false;
+
+  const candidates: string[] = [cleanUsername];
+  if (currentUniqueTag && currentUniqueTag.trim()) {
+    candidates.push(currentUniqueTag.trim());
+  }
+
+  for (const target of candidates) {
+    const escaped = escapeRegexChars(target);
+    const pattern = new RegExp(
+      `(?:^|[\\s([{"'])@${escaped}(?=$|[\\s.,!?:;)\\]}"'])`,
+      'i'
+    );
+    if (pattern.test(content)) {
+      return true;
+    }
+  }
+
+  // Also support @everyone and @here channel-wide mentions
+  if (/(?:^|[\s([{"'])@(?:everyone|here)(?=$|[\s.,!?:;)\]}"'])/i.test(content)) {
+    return true;
+  }
+
+  return false;
+}
+
+

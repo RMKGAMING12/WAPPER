@@ -16,6 +16,14 @@ import {
   isFounderUser,
   getUserHighestRole,
   hasServerPermission,
+  buildDMConversationId,
+  isMessageInDMConversation,
+  parseMessageTimestampMs,
+  sortMessagesByCreatedAtAsc,
+  extractMentionQuery,
+  filterMentionCandidates,
+  injectMentionIntoInput,
+  doesMessageMentionUser,
   DEFAULT_SERVER_ROLES,
   HydratedFriendItem,
 } from './chatLogic';
@@ -267,3 +275,128 @@ test('isFounderUser and role permission helpers identify Mayank Raj and evaluate
     true
   );
 });
+
+test('buildDMConversationId, isMessageInDMConversation, and sortMessagesByCreatedAtAsc handle bidirectional DMs and ascending order', () => {
+  const convAB = buildDMConversationId('usr_bob', 'usr_alice');
+  const convBA = buildDMConversationId('usr_alice', 'usr_bob');
+  assert.equal(convAB, convBA);
+  assert.equal(convAB, 'dm_usr_alice_usr_bob');
+
+  assert.equal(
+    isMessageInDMConversation(
+      { senderId: 'usr_alice', receiverId: 'usr_bob' },
+      'usr_bob',
+      'usr_alice'
+    ),
+    true
+  );
+  assert.equal(
+    isMessageInDMConversation(
+      { senderId: 'usr_bob', receiverId: 'usr_alice' },
+      'usr_bob',
+      'usr_alice'
+    ),
+    true
+  );
+  assert.equal(
+    isMessageInDMConversation(
+      { senderId: 'usr_alice', receiverId: 'usr_charlie' },
+      'usr_bob',
+      'usr_alice'
+    ),
+    false
+  );
+
+  assert.equal(
+    parseMessageTimestampMs({ seconds: 1700000000, nanoseconds: 500000000 }),
+    1700000000500
+  );
+
+  const unsorted = [
+    { id: 'm3', createdAt: '2026-10-27T12:00:05.000Z', content: 'Third' },
+    { id: 'm1', createdAt: '2026-10-27T12:00:01.000Z', content: 'First' },
+    { id: 'm2', createdAt: '2026-10-27T12:00:03.000Z', content: 'Second' },
+    { id: 'm1', createdAt: '2026-10-27T12:00:01.000Z', content: 'First (edited)' },
+  ];
+  const sorted = sortMessagesByCreatedAtAsc(unsorted);
+  assert.equal(sorted.length, 3);
+  assert.deepEqual(
+    sorted.map((m) => m.id),
+    ['m1', 'm2', 'm3']
+  );
+  assert.equal(sorted[0].content, 'First (edited)');
+});
+
+test('extractMentionQuery, filterMentionCandidates, injectMentionIntoInput, and doesMessageMentionUser handle Discord-style @mentions', () => {
+  const triggerAtStart = extractMentionQuery('@');
+  assert.equal(triggerAtStart.active, true);
+  assert.equal(triggerAtStart.query, '');
+  assert.equal(triggerAtStart.startIndex, 0);
+
+  const triggerMidSentence = extractMentionQuery('Hey @May');
+  assert.equal(triggerMidSentence.active, true);
+  assert.equal(triggerMidSentence.query, 'May');
+  assert.equal(triggerMidSentence.startIndex, 4);
+
+  // Completed mention with trailing space should close popup
+  const completedMention = extractMentionQuery('Hey @Mayank Raj ');
+  assert.equal(completedMention.active, false);
+
+  // Email addresses should not trigger mention autocomplete
+  const emailText = extractMentionQuery('Reach me at user@gmail.com');
+  assert.equal(emailText.active, false);
+
+  const members = [
+    { id: 'u1', username: 'Mayank Raj', uniqueTag: 'Mayank Raj#5603', status: 'online' as const },
+    { id: 'u2', username: 'Alex Mercer', uniqueTag: 'Alex Mercer#1024', status: 'online' as const },
+    { id: 'u3', username: 'Maya Lin', uniqueTag: 'Maya Lin#8811', status: 'offline' as const },
+  ];
+
+  const filtered = filterMentionCandidates(members, 'may');
+  assert.equal(filtered.length, 2);
+  assert.equal(filtered[0].username, 'Mayank Raj'); // Online ranked before offline
+  assert.equal(filtered[1].username, 'Maya Lin');
+
+  const injected = injectMentionIntoInput(
+    'Hey @May',
+    'Mayank Raj',
+    triggerMidSentence.startIndex,
+    triggerMidSentence.endIndex
+  );
+  assert.equal(injected.text, 'Hey @Mayank Raj ');
+
+  // Mention highlight detection
+  assert.equal(
+    doesMessageMentionUser('Hey @Mayank Raj check out this build!', 'Mayank Raj'),
+    true
+  );
+  assert.equal(
+    doesMessageMentionUser('@Alex Mercer!', 'Alex Mercer'),
+    true
+  );
+  assert.equal(
+    doesMessageMentionUser('Just a normal message without mentions', 'Mayank Raj'),
+    false
+  );
+  assert.equal(
+    doesMessageMentionUser('Mentioning @Alex Mercer only', 'Mayank Raj'),
+    false
+  );
+
+  // Inline markdown @mention tokenizing
+  const segments = parseInlineMarkdown(
+    'Hello @Mayank Raj and @Alex_Mercer!',
+    {},
+    ['Mayank Raj', 'Alex_Mercer']
+  );
+  assert.equal(
+    segments.some((s) => s.type === 'mention' && s.value === '@Mayank Raj'),
+    true
+  );
+  assert.equal(
+    segments.some((s) => s.type === 'mention' && s.value === '@Alex_Mercer'),
+    true
+  );
+});
+
+
