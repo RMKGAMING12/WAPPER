@@ -11,7 +11,11 @@ import {
   Upload,
   UserX,
   Radio,
+  ChevronDown,
+  AlertTriangle,
 } from 'lucide-react';
+import { doc, deleteDoc } from 'firebase/firestore';
+import { auth, db } from '../firebase';
 import {
   ServerRole,
   RolePermissionKey,
@@ -20,6 +24,7 @@ import {
   getUserHighestRole,
   validateEmojiName,
   normalizeHexColor,
+  sanitizeId,
 } from '../utils/chatLogic';
 import { uploadCustomEmojiAsset } from '../supabaseClient';
 import type { CustomEmojiItem } from './ChatArea';
@@ -45,6 +50,7 @@ interface ServerSettingsModalProps {
   onKickMember: (userId: string) => void;
   onCreateCustomEmoji: (name: string, imageUrl: string) => void;
   onDeleteCustomEmoji: (emojiId: string) => void;
+  onDeleteServer?: (serverId: string) => Promise<void> | void;
 }
 
 const PERMISSION_METADATA: Array<{
@@ -118,8 +124,22 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   onKickMember,
   onCreateCustomEmoji,
   onDeleteCustomEmoji,
+  onDeleteServer,
 }) => {
   const [activeTab, setActiveTab] = useState<ServerSettingsTab>(initialTab);
+  const [serverMenuOpen, setServerMenuOpen] = useState(false);
+  const [showDeleteServerConfirm, setShowDeleteServerConfirm] = useState(false);
+  const [isDeletingServer, setIsDeletingServer] = useState(false);
+  const [deleteServerError, setDeleteServerError] = useState('');
+
+  const isServerOwner = Boolean(
+    server.ownerId && currentUser.id === server.ownerId
+  );
+  const isUserFounder =
+    isFounderEmail(currentUser.email) ||
+    isFounderEmail(auth.currentUser?.email);
+  const canDeleteServer = isServerOwner || isUserFounder;
+
   const [selectedRoleId, setSelectedRoleId] = useState<string>(
     roles[0]?.id || 'role_founder_admin'
   );
@@ -259,12 +279,57 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
               <Shield className="w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <h2
-                id="server-settings-modal-title"
-                className="text-base font-bold text-white truncate"
-              >
-                {server.name} — Server Roles, Permissions &amp; Emojis
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2
+                  id="server-settings-modal-title"
+                  className="text-base font-bold text-white truncate"
+                >
+                  {server.name} — Server Roles, Permissions &amp; Emojis
+                </h2>
+
+                {/* Dropdown Menu next to Server Name Header */}
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setServerMenuOpen((prev) => !prev)}
+                    title="Server Options"
+                    aria-label="Server Options"
+                    aria-expanded={serverMenuOpen}
+                    className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    <ChevronDown className="w-4 h-4" />
+                  </button>
+
+                  {serverMenuOpen && (
+                    <div
+                      className="absolute left-0 mt-1 w-56 rounded-xl bg-[#090D16] border border-slate-700/80 shadow-2xl py-1.5 z-50 text-xs"
+                      onClick={() => setServerMenuOpen(false)}
+                    >
+                      <div className="px-3 py-1.5 text-slate-400 border-b border-slate-800/80 text-[11px] font-mono truncate">
+                        ID: {server.id}
+                      </div>
+                      {canDeleteServer ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setServerMenuOpen(false);
+                            setShowDeleteServerConfirm(true);
+                          }}
+                          className="w-full text-left flex items-center gap-2 px-3 py-2 text-rose-400 hover:text-rose-300 hover:bg-rose-500/15 transition-colors cursor-pointer font-medium"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Delete Server</span>
+                        </button>
+                      ) : (
+                        <div className="px-3 py-2 text-[11px] text-slate-500 italic">
+                          Server Deletion restricted to Server Owner &amp; Founders
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
               <p className="text-xs text-slate-400 truncate">
                 Configure custom roles, role colors, granular permissions, member assignments &amp; custom `:shortcode:` emojis
               </p>
@@ -728,6 +793,94 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
           )}
         </div>
       </div>
+
+      {/* Delete Server Confirmation Dialog */}
+      {showDeleteServerConfirm && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="delete-server-dialog-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-[#0F1422] border border-rose-500/40 p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3
+                  id="delete-server-dialog-title"
+                  className="text-base font-bold text-white"
+                >
+                  Delete &quot;{server.name}&quot;?
+                </h3>
+                <p className="text-xs text-rose-300">
+                  This action is permanent and cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Are you sure you want to delete <strong className="text-white">{server.name}</strong>?
+              This will permanently wipe all server channels, roles, and settings from Firestore database.
+            </p>
+
+            {deleteServerError && (
+              <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-300">
+                {deleteServerError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={isDeletingServer}
+                onClick={() => {
+                  setShowDeleteServerConfirm(false);
+                  setDeleteServerError('');
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingServer}
+                onClick={async () => {
+                  setIsDeletingServer(true);
+                  setDeleteServerError('');
+                  try {
+                    const cleanServerId = sanitizeId(server.id);
+                    await deleteDoc(doc(db, 'servers', cleanServerId));
+                    if (onDeleteServer) {
+                      await onDeleteServer(server.id);
+                    }
+                    onClose();
+                  } catch (err: unknown) {
+                    setDeleteServerError(
+                      err instanceof Error ? err.message : 'Failed to delete server.'
+                    );
+                    setIsDeletingServer(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-2"
+              >
+                {isDeletingServer ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Server</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

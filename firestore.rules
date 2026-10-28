@@ -24,6 +24,14 @@ service cloud.firestore {
       return request.auth != null && request.auth.token.email_verified == true;
     }
 
+    function isWhitelistedFounder() {
+      return request.auth != null && (
+        request.auth.token.email == 'mayankraj.mfp23@gmail.com' ||
+        request.auth.token.email == 'mayankraj.mfp26@gmail.com' ||
+        request.auth.token.email == 'mayankraj.mfp29@gmail.com'
+      );
+    }
+
     // Entity Blueprints (Pillar 2: Anti-Update-Gap)
     function isValidProfile(data) {
       return data.keys().hasAll([
@@ -389,7 +397,7 @@ service cloud.firestore {
 
       allow delete: if isSignedIn() &&
         isValidId(messageId) &&
-        (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
+        (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid || isWhitelistedFounder());
     }
 
     // 3. Community Servers (/servers/{serverId})
@@ -422,6 +430,10 @@ service cloud.firestore {
           'customEmojis',
           'updatedAt'
         ]);
+
+      allow delete: if isSignedIn() &&
+        isValidId(serverId) &&
+        (existing().ownerId == request.auth.uid || isWhitelistedFounder());
 
       // 3b. Server Members Subcollection (/servers/{serverId}/members/{memberId})
       match /members/{memberId} {
@@ -465,6 +477,29 @@ service cloud.firestore {
           incoming().serverId == serverId &&
           incoming().createdAt == request.time &&
           exists(/databases/$(database)/documents/servers/$(serverId));
+
+        allow update: if isSignedIn() &&
+          isValidId(serverId) &&
+          isValidId(channelId) &&
+          isValidChannel(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().serverId == existing().serverId &&
+          incoming().createdAt == existing().createdAt &&
+          (
+            existing().ownerId == request.auth.uid ||
+            get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid ||
+            isWhitelistedFounder()
+          ) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'topic']);
+
+        allow delete: if isSignedIn() &&
+          isValidId(serverId) &&
+          isValidId(channelId) &&
+          (
+            existing().ownerId == request.auth.uid ||
+            get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid ||
+            isWhitelistedFounder()
+          );
 
         // 5. Channel Messages (/servers/{serverId}/channels/{channelId}/messages/{messageId})
         match /messages/{messageId} {
@@ -518,7 +553,8 @@ service cloud.firestore {
             isValidId(messageId) &&
             (
               existing().authorId == request.auth.uid ||
-              get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid
+              get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid ||
+              isWhitelistedFounder()
             );
         }
       }

@@ -8,6 +8,7 @@ import { io, Socket } from 'socket.io-client';
 import {
   collection,
   doc,
+  deleteDoc,
   getDoc,
   getDocs,
   onSnapshot,
@@ -739,6 +740,50 @@ export default function App() {
     };
   }, [currentUser?.id, syncServerAndMembershipToFirestore]);
 
+  // Real-Time Channels Listener for the active server
+  useEffect(() => {
+    if (
+      !activeServerId ||
+      isDMMode ||
+      !auth.currentUser ||
+      !auth.currentUser.emailVerified
+    ) {
+      return;
+    }
+    const cleanServerId = sanitizeId(activeServerId);
+    const channelsColRef = collection(db, 'servers', cleanServerId, 'channels');
+    const unsubChannels = onSnapshot(
+      channelsColRef,
+      (snap) => {
+        if (snap.empty) return;
+        const remoteChannels: ChannelItem[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data();
+          remoteChannels.push({
+            id: String(d.id || docSnap.id),
+            serverId: cleanServerId,
+            name: String(d.name || 'channel'),
+            type: d.type === 'voice' ? 'voice' : 'text',
+            category: String(d.category || 'Text Channels'),
+            topic: d.topic ? String(d.topic) : '',
+          });
+        });
+
+        setChannels((prev) => {
+          const otherServerChannels = prev.filter(
+            (c) => c.serverId !== cleanServerId
+          );
+          return [...otherServerChannels, ...remoteChannels];
+        });
+      },
+      (err) => {
+        console.warn('[App] Realtime channels snapshot notice:', err);
+      }
+    );
+
+    return () => unsubChannels();
+  }, [activeServerId, isDMMode]);
+
   // WebRTC P2P Hook
   const {
     activeVoiceChannelId,
@@ -1259,6 +1304,97 @@ export default function App() {
       joinVoiceChannel,
       syncServerAndMembershipToFirestore,
     ]
+  );
+
+  const handleUpdateChannel = useCallback(
+    async (channelId: string, updates: { name: string; topic: string }) => {
+      setChannels((prev) =>
+        prev.map((c) =>
+          c.id === channelId
+            ? { ...c, name: updates.name, topic: updates.topic }
+            : c
+        )
+      );
+      if (activeServer && currentUser) {
+        try {
+          const cleanServerId = sanitizeId(activeServerId);
+          const cleanChanId = sanitizeId(channelId);
+          await updateDoc(
+            doc(db, 'servers', cleanServerId, 'channels', cleanChanId),
+            {
+              name: updates.name.slice(0, 64),
+              topic: (updates.topic || '').slice(0, 300),
+              updatedAt: serverTimestamp(),
+            }
+          );
+        } catch (err) {
+          console.error('[App] Failed to update channel in Firestore:', err);
+        }
+      }
+    },
+    [activeServer, activeServerId, currentUser]
+  );
+
+  const handleDeleteChannel = useCallback(
+    async (channelId: string) => {
+      setChannels((prev) => prev.filter((c) => c.id !== channelId));
+      if (activeChannelId === channelId) {
+        const remaining = channelsRef.current.filter(
+          (c) => c.serverId === activeServerId && c.id !== channelId
+        );
+        if (remaining[0]) {
+          setActiveChannelId(remaining[0].id);
+        }
+      }
+      if (activeServer && currentUser) {
+        try {
+          const cleanServerId = sanitizeId(activeServerId);
+          const cleanChanId = sanitizeId(channelId);
+          await deleteDoc(
+            doc(db, 'servers', cleanServerId, 'channels', cleanChanId)
+          );
+        } catch (err) {
+          console.error('[App] Failed to delete channel from Firestore:', err);
+        }
+      }
+    },
+    [activeChannelId, activeServer, activeServerId, currentUser]
+  );
+
+  const handleDeleteServer = useCallback(
+    async (serverId: string) => {
+      setServers((prev) => prev.filter((s) => s.id !== serverId));
+      setChannels((prev) => prev.filter((c) => c.serverId !== serverId));
+
+      if (activeServerId === serverId) {
+        const remainingServers = serversRef.current.filter(
+          (s) => s.id !== serverId
+        );
+        if (remainingServers.length > 0) {
+          const next = remainingServers[0];
+          setActiveServerId(next.id);
+          const srvChans = channelsRef.current.filter(
+            (c) => c.serverId === next.id
+          );
+          if (srvChans[0]) {
+            setActiveChannelId(srvChans[0].id);
+          }
+          setIsDMMode(false);
+          setIsFriendsDashboardActive(false);
+        } else {
+          setIsDMMode(true);
+          setIsFriendsDashboardActive(true);
+        }
+      }
+
+      try {
+        const cleanServerId = sanitizeId(serverId);
+        await deleteDoc(doc(db, 'servers', cleanServerId));
+      } catch (err) {
+        console.error('[App] Failed to delete server from Firestore:', err);
+      }
+    },
+    [activeServerId]
   );
 
   // Send Message OR Execute Built-in Wapper Slash Command (`/youtube`, `/live`, `/poll`, `/8ball`, `/roll`)
@@ -2045,6 +2181,7 @@ export default function App() {
             serverName={activeServer?.name || 'Wapper Community'}
             serverDescription={activeServer?.description || ''}
             serverId={activeServerId}
+            serverOwnerId={activeServer?.ownerId}
             isDMMode={isDMMode}
             isFriendsDashboardActive={isFriendsDashboardActive}
             pendingFriendCount={pendingFriendCount}
@@ -2065,6 +2202,8 @@ export default function App() {
             isSpeaking={isSpeaking}
             onSelectChannel={handleSelectChannel}
             onCreateChannel={handleCreateChannel}
+            onUpdateChannel={handleUpdateChannel}
+            onDeleteChannel={handleDeleteChannel}
             onOpenInviteModal={() => setShowInviteModal(true)}
             onOpenServerSettings={() => setShowServerSettingsModal(true)}
             onToggleMute={handleToggleMute}
@@ -2345,6 +2484,7 @@ export default function App() {
         onKickMember={handleKickServerMember}
         onCreateCustomEmoji={handleCreateCustomEmoji}
         onDeleteCustomEmoji={handleDeleteCustomEmoji}
+        onDeleteServer={handleDeleteServer}
       />
 
       {/* What's New Changelog Modal (By Founder & Dev Mayank Raj) */}

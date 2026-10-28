@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   collection,
+  doc,
+  deleteDoc,
   onSnapshot,
   query,
   where,
@@ -820,7 +822,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     setEditingContent('');
   };
 
-  const handleLocalDeleteMessage = (messageId: string) => {
+  const handleLocalDeleteMessage = async (
+    messageId: string,
+    msg?: ChatMessageItem
+  ) => {
+    // 1. Optimistic UI update
     setDeletedMessageIds((prev) => {
       const next = new Set(prev);
       next.add(messageId);
@@ -828,6 +834,32 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     });
     setRealtimeMessages((prev) => prev.filter((m) => m.id !== messageId));
     onDeleteMessage(messageId);
+
+    // 2. Direct client-side Firestore document deletion
+    try {
+      const cleanMsgId = sanitizeId(messageId);
+      if (isDMMode) {
+        await deleteDoc(doc(db, 'direct_messages', cleanMsgId));
+      } else {
+        const cleanServerId = sanitizeId(msg?.serverId || serverId);
+        const cleanChannelId = sanitizeId(msg?.channelId || channelId);
+        if (cleanServerId && cleanChannelId) {
+          await deleteDoc(
+            doc(
+              db,
+              'servers',
+              cleanServerId,
+              'channels',
+              cleanChannelId,
+              'messages',
+              cleanMsgId
+            )
+          );
+        }
+      }
+    } catch (err) {
+      console.error('[ChatArea] Direct Firestore message deletion error:', err);
+    }
   };
 
   const handleScrollToMessage = (messageId: string) => {
@@ -1293,7 +1325,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             );
             const isAuthorSelf = msg.authorId === currentUserId;
             const canEditThisMessage = isAuthorSelf && !msg.isBot;
-            const canDeleteThisMessage = isAuthorSelf || canDeleteMessages;
+            const currentMemberProfile = activeMemberCandidates.find(
+              (m) => m.id === currentUserId
+            );
+            const currentUserEmail =
+              auth.currentUser?.email || currentMemberProfile?.email;
+            const isCurrentFounder = isFounderEmail(currentUserEmail);
+            const canDeleteThisMessage =
+              isAuthorSelf || isCurrentFounder || canDeleteMessages;
             const authorCandidate = activeMemberCandidates.find(
               (m) => m.id === msg.authorId
             );
@@ -1382,11 +1421,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     </button>
                   )}
 
-                  {/* Delete Button (if author or has DELETE_MESSAGES) */}
+                  {/* Delete Button (if author or whitelisted founder or has DELETE_MESSAGES) */}
                   {canDeleteThisMessage && (
                     <button
                       type="button"
-                      onClick={() => handleLocalDeleteMessage(msg.id)}
+                      onClick={() => handleLocalDeleteMessage(msg.id, msg)}
                       title="Delete Message"
                       aria-label="Delete Message"
                       className="p-1.5 rounded-lg text-slate-300 hover:text-rose-400 hover:bg-rose-500/15 transition-colors cursor-pointer"

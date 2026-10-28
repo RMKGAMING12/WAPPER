@@ -26,6 +26,7 @@ import {
   sanitizeChannelName,
   isFounderEmail,
 } from '../utils/chatLogic';
+import { ChannelSettingsModal } from './ChannelSettingsModal';
 
 export interface VoiceChannelOccupant {
   socketId: string;
@@ -43,6 +44,7 @@ interface ChannelListProps {
   serverName: string;
   serverDescription: string;
   serverId: string;
+  serverOwnerId?: string;
   isDMMode: boolean;
   isFriendsDashboardActive: boolean;
   pendingFriendCount: number;
@@ -63,6 +65,8 @@ interface ChannelListProps {
   isSpeaking: boolean;
   onSelectChannel: (channel: ChannelItem) => void;
   onCreateChannel: (name: string, type: 'text' | 'voice', category: string) => void;
+  onUpdateChannel?: (channelId: string, updates: { name: string; topic: string }) => void;
+  onDeleteChannel?: (channelId: string) => void;
   onOpenInviteModal: () => void;
   onOpenServerSettings: () => void;
   onToggleMute: () => void;
@@ -89,6 +93,7 @@ export const ChannelList: React.FC<ChannelListProps> = ({
   serverName,
   serverDescription,
   serverId,
+  serverOwnerId,
   isDMMode,
   isFriendsDashboardActive,
   pendingFriendCount,
@@ -109,6 +114,8 @@ export const ChannelList: React.FC<ChannelListProps> = ({
   isSpeaking,
   onSelectChannel,
   onCreateChannel,
+  onUpdateChannel,
+  onDeleteChannel,
   onOpenInviteModal,
   onOpenServerSettings,
   onToggleMute,
@@ -121,10 +128,15 @@ export const ChannelList: React.FC<ChannelListProps> = ({
   onGoogleSignOut,
 }) => {
   const [showChannelModal, setShowChannelModal] = useState(false);
+  const [channelToConfigure, setChannelToConfigure] = useState<ChannelItem | null>(null);
   const [newChannelType, setNewChannelType] = useState<'text' | 'voice'>('text');
   const [newChannelName, setNewChannelName] = useState('');
   const [channelError, setChannelError] = useState('');
   const [showStatusMenu, setShowStatusMenu] = useState(false);
+
+  const isServerOwner = Boolean(serverOwnerId && currentUser.id === serverOwnerId);
+  const isFounder = isFounderEmail(currentUser.email);
+  const canManageChannelSettings = isServerOwner || isFounder;
 
   const { textChannels, voiceChannels } = groupChannelsByType(channels, serverId);
   const activeVoiceChannelObj = channels.find((c) => c.id === activeVoiceChannelId);
@@ -361,19 +373,39 @@ export const ChannelList: React.FC<ChannelListProps> = ({
                   {textChannels.map((channel) => {
                     const isSelected = channel.id === activeChannelId;
                     return (
-                      <button
+                      <div
                         key={channel.id}
-                        type="button"
-                        onClick={() => onSelectChannel(channel)}
-                        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                          isSelected
-                            ? 'bg-indigo-600/20 text-white border border-indigo-500/30'
-                            : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
-                        }`}
+                        className="group/chan relative flex items-center justify-between rounded-lg"
                       >
-                        <Hash className="w-4 h-4 text-slate-400 shrink-0" />
-                        <span className="truncate">{channel.name}</span>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => onSelectChannel(channel)}
+                          className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                            canManageChannelSettings ? 'pr-8' : ''
+                          } ${
+                            isSelected
+                              ? 'bg-indigo-600/20 text-white border border-indigo-500/30'
+                              : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+                          }`}
+                        >
+                          <Hash className="w-4 h-4 text-slate-400 shrink-0" />
+                          <span className="truncate">{channel.name}</span>
+                        </button>
+                        {canManageChannelSettings && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setChannelToConfigure(channel);
+                            }}
+                            title={`Configure #${channel.name}`}
+                            aria-label={`Configure #${channel.name}`}
+                            className="absolute right-1.5 p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-700/80 opacity-0 group-hover/chan:opacity-100 transition-opacity cursor-pointer shrink-0 z-10"
+                          >
+                            <Settings className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
@@ -406,29 +438,47 @@ export const ChannelList: React.FC<ChannelListProps> = ({
                     const occupants = voiceOccupantsByChannel[channel.id] || [];
                     return (
                       <div key={channel.id} className="space-y-1">
-                        <button
-                          type="button"
-                          onClick={() => onSelectChannel(channel)}
-                          className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                            isJoined
-                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                              : isViewing
-                              ? 'bg-slate-800 text-white'
-                              : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <Volume2
-                              className={`w-4 h-4 shrink-0 ${
-                                isJoined ? 'text-emerald-400' : 'text-slate-400'
-                              }`}
-                            />
-                            <span className="truncate">{channel.name}</span>
-                          </div>
-                          <span className="text-[10px] font-mono tabular-nums text-slate-400 shrink-0">
-                            {occupants.length > 0 ? `${occupants.length} P2P` : '0'}
-                          </span>
-                        </button>
+                        <div className="group/chan relative flex items-center justify-between rounded-lg">
+                          <button
+                            type="button"
+                            onClick={() => onSelectChannel(channel)}
+                            className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                              canManageChannelSettings ? 'pr-8' : ''
+                            } ${
+                              isJoined
+                                ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                                : isViewing
+                                ? 'bg-slate-800 text-white'
+                                : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Volume2
+                                className={`w-4 h-4 shrink-0 ${
+                                  isJoined ? 'text-emerald-400' : 'text-slate-400'
+                                }`}
+                              />
+                              <span className="truncate">{channel.name}</span>
+                            </div>
+                            <span className="text-[10px] font-mono tabular-nums text-slate-400 shrink-0">
+                              {occupants.length > 0 ? `${occupants.length} P2P` : '0'}
+                            </span>
+                          </button>
+                          {canManageChannelSettings && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setChannelToConfigure(channel);
+                              }}
+                              title={`Configure ${channel.name}`}
+                              aria-label={`Configure ${channel.name}`}
+                              className="absolute right-1.5 p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-700/80 opacity-0 group-hover/chan:opacity-100 transition-opacity cursor-pointer shrink-0 z-10"
+                            >
+                              <Settings className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
 
                         {/* Connected Voice Peers Under Channel */}
                         {occupants.length > 0 && (
@@ -781,6 +831,17 @@ export const ChannelList: React.FC<ChannelListProps> = ({
           </div>
         </div>
       )}
+
+      {/* Channel Settings & Management Modal */}
+      <ChannelSettingsModal
+        isOpen={!!channelToConfigure}
+        channel={channelToConfigure}
+        currentUser={currentUser}
+        serverOwnerId={serverOwnerId}
+        onClose={() => setChannelToConfigure(null)}
+        onUpdateChannel={onUpdateChannel || (() => {})}
+        onDeleteChannel={onDeleteChannel || (() => {})}
+      />
     </>
   );
 };
