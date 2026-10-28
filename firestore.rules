@@ -165,7 +165,7 @@ service cloud.firestore {
         (!('reactions' in data) || (data.reactions is map && data.reactions.size() <= 50)) &&
         (!('isBot' in data) || data.isBot is bool) &&
         (!('botName' in data) || (data.botName is string && data.botName.size() <= 64)) &&
-        (!('botEmbed' in data) || (data.botEmbed is map && data.botEmbed.size() <= 15)) &&
+        (!('botEmbed' in data) || (data.botEmbed is map && data.botEmbed.size() <= 20)) &&
         (!('isEdited' in data) || data.isEdited is bool) &&
         (!('updatedAt' in data) || data.updatedAt is timestamp) &&
         data.createdAt is timestamp;
@@ -183,6 +183,7 @@ service cloud.firestore {
           'roles',
           'memberRoles',
           'customEmojis',
+          'youtubeBotConfig',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -194,8 +195,9 @@ service cloud.firestore {
         (!('roles' in data) || (data.roles is list && data.roles.size() <= 30)) &&
         (!('memberRoles' in data) || (data.memberRoles is map && data.memberRoles.size() <= 100)) &&
         (!('customEmojis' in data) || (data.customEmojis is list && data.customEmojis.size() <= 100)) &&
+        (!('youtubeBotConfig' in data) || (data.youtubeBotConfig is map && data.youtubeBotConfig.size() <= 15)) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isWhitelistedFounder()) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -274,7 +276,7 @@ service cloud.firestore {
         (!('reactions' in data) || (data.reactions is map && data.reactions.size() <= 50)) &&
         (!('isBot' in data) || data.isBot is bool) &&
         (!('botName' in data) || (data.botName is string && data.botName.size() <= 64)) &&
-        (!('botEmbed' in data) || (data.botEmbed is map && data.botEmbed.size() <= 15)) &&
+        (!('botEmbed' in data) || (data.botEmbed is map && data.botEmbed.size() <= 20)) &&
         (!('isEdited' in data) || data.isEdited is bool) &&
         (!('updatedAt' in data) || data.updatedAt is timestamp) &&
         data.createdAt is timestamp;
@@ -415,7 +417,7 @@ service cloud.firestore {
       allow update: if isSignedIn() &&
         isValidServer(incoming()) &&
         isValidId(serverId) &&
-        existing().ownerId == request.auth.uid &&
+        (existing().ownerId == request.auth.uid || isWhitelistedFounder()) &&
         incoming().id == existing().id &&
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
@@ -428,6 +430,7 @@ service cloud.firestore {
           'roles',
           'memberRoles',
           'customEmojis',
+          'youtubeBotConfig',
           'updatedAt'
         ]);
 

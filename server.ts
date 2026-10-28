@@ -128,6 +128,22 @@ const servers: WapperServer[] = [
 ];
 const channels: WapperChannel[] = [
   {
+    id: 'chan_announcements',
+    serverId: 'srv_wapper_community',
+    name: '📢-announcements',
+    type: 'text',
+    category: 'System & Stream Alerts',
+    topic: 'Automatic YouTube Upload & Live Stream Notification Bot (Google PubSubHubbub RSS)',
+  },
+  {
+    id: 'chan_stream_alerts',
+    serverId: 'srv_wapper_community',
+    name: '🚀-stream-alerts',
+    type: 'text',
+    category: 'System & Stream Alerts',
+    topic: 'Real-time 🔴 GO LIVE ALERT & 🆕 NEW VIDEO UPLOAD notifications from Wapper Bot',
+  },
+  {
     id: 'chan_general',
     serverId: 'srv_wapper_community',
     name: 'general',
@@ -291,6 +307,12 @@ async function startServer() {
   });
 
   app.use(express.json({ limit: '10mb' }));
+  app.use(
+    express.text({
+      type: ['application/atom+xml', 'application/xml', 'text/xml', 'text/plain'],
+      limit: '2mb',
+    })
+  );
 
   // Explicitly serve PWA Service Worker and Manifest with strict MIME types
   app.get('/sw.js', (_req, res) => {
@@ -550,6 +572,123 @@ async function startServer() {
       res.json({ schemaSql, manifestJson });
     } catch (err: unknown) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read files' });
+    }
+  });
+
+  // 4b. Google PubSubHubbub RSS Webhook Listener for YouTube Uploads & Live Streams
+  // Official feed topic format: https://www.youtube.com/xml/feeds/videos.xml?channel_id=CHANNEL_ID
+  app.get('/api/webhooks/youtube-pubsub', (req, res) => {
+    const challenge = req.query['hub.challenge'];
+    if (challenge && typeof challenge === 'string') {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      return res.status(200).send(challenge);
+    }
+    return res.status(200).json({
+      status: 'active',
+      service: 'Wapper YouTube PubSubHubbub RSS Webhook Listener',
+      feedBaseUrl: 'https://www.youtube.com/xml/feeds/videos.xml',
+    });
+  });
+
+  app.post('/api/webhooks/youtube-pubsub', (req, res) => {
+    try {
+      const rawXml =
+        typeof req.body === 'string'
+          ? req.body
+          : typeof req.body?.xml === 'string'
+          ? req.body.xml
+          : '';
+
+      if (!rawXml || !rawXml.includes('<entry')) {
+        return res.status(204).end();
+      }
+
+      const entryBlock = rawXml.match(/<entry[\s\S]*?<\/entry>/i)?.[0] || rawXml;
+      const extractTag = (block: string, tag: string): string => {
+        const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+        return m?.[1]?.trim() || '';
+      };
+
+      const videoId =
+        extractTag(entryBlock, 'yt:videoId') || 'jfKfPfyJRdk';
+      const channelId =
+        extractTag(entryBlock, 'yt:channelId') || 'UC_x5XG1OV2P6uZZ5FSM9Ttw';
+      const title =
+        extractTag(entryBlock, 'title') || 'New YouTube Broadcast';
+      const authorBlock = extractTag(entryBlock, 'author');
+      const channelName =
+        extractTag(authorBlock, 'name') ||
+        extractTag(rawXml, 'name') ||
+        'YouTube Creator';
+      const liveBroadcastTag = extractTag(
+        entryBlock,
+        'yt:liveBroadcastContent'
+      ).toLowerCase();
+      const isLiveStream =
+        liveBroadcastTag === 'live' ||
+        liveBroadcastTag === 'upcoming' ||
+        /\b(live|streaming|broadcast)\b/i.test(title);
+      const alertHeader = isLiveStream
+        ? '🔴 GO LIVE ALERT'
+        : '🆕 NEW VIDEO UPLOAD';
+
+      const targetChannelId =
+        String(req.headers['x-wapper-channel-id'] || '').trim() ||
+        'chan_announcements';
+      const targetServerId =
+        String(req.headers['x-wapper-server-id'] || '').trim() ||
+        'srv_wapper_community';
+
+      const deterministicMsgId = `msg_ytbot_${videoId.replace(/[^a-zA-Z0-9_-]/g, '_')}_${
+        isLiveStream ? 'live' : 'upload'
+      }`;
+
+      const botMessage = {
+        id: deterministicMsgId,
+        channelId: targetChannelId,
+        serverId: targetServerId,
+        authorId: 'system_wapper_bot',
+        authorName: 'Wapper Bot',
+        authorAvatar: '',
+        authorRoleColor: isLiveStream ? '#EF4444' : '#5865F2',
+        content: `${alertHeader} — **${channelName}** ${
+          isLiveStream ? 'is streaming live right now' : 'just uploaded a new video'
+        }: **${title}**`,
+        isBot: true,
+        botName: 'Wapper Bot',
+        botEmbed: {
+          embedType: isLiveStream
+            ? 'youtube_live_alert'
+            : 'youtube_upload_alert',
+          botName: 'Wapper Bot',
+          botBadgeText: '✓ BOT',
+          title,
+          description: isLiveStream
+            ? `${channelName} is live on YouTube! Watch or listen directly inside Wapper below.`
+            : `${channelName} uploaded a new YouTube video! Watch directly inside Wapper below.`,
+          youtubeVideoId: videoId,
+          streamUrl: `https://www.youtube.com/watch?v=${videoId}`,
+          streamerName: channelName,
+          channelName,
+          youtubeChannelId: channelId,
+          alertHeader,
+          isLiveStream,
+          publishedAt: new Date().toISOString(),
+          accentColor: isLiveStream ? '#EF4444' : '#5865F2',
+        },
+        createdAt: new Date().toISOString(),
+      };
+
+      const existingList = messagesByChannel.get(targetChannelId) || [];
+      const filteredList = existingList.filter((m) => m.id !== deterministicMsgId);
+      filteredList.push(botMessage);
+      messagesByChannel.set(targetChannelId, filteredList);
+
+      io.to(targetChannelId).emit('new-message', botMessage);
+      return res.status(200).json({ received: true, message: botMessage });
+    } catch (err: unknown) {
+      console.error('YouTube PubSubHubbub webhook error:', err);
+      return res.status(500).json({ error: 'Failed to process PubSubHubbub payload' });
     }
   });
 

@@ -9,7 +9,12 @@ import {
   ArrowRight,
   Sparkles,
 } from 'lucide-react';
-import { ServerRole, WapperProfile, parseInviteInput } from '../utils/chatLogic';
+import {
+  ServerRole,
+  WapperProfile,
+  YouTubeBotConfig,
+  parseInviteInput,
+} from '../utils/chatLogic';
 import type { CustomEmojiItem } from './ChatArea';
 
 export interface ServerItem {
@@ -23,6 +28,7 @@ export interface ServerItem {
   roles?: ServerRole[];
   memberRoles?: Record<string, string[]>;
   customEmojis?: CustomEmojiItem[];
+  youtubeBotConfig?: YouTubeBotConfig;
 }
 
 interface SidebarProps {

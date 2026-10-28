@@ -57,6 +57,7 @@ import {
   ServerRole,
   MessageReplyMetadata,
   BotEmbedPayload,
+  YouTubeBotConfig,
   DEFAULT_SERVER_ROLES,
   filterHydratedFriendsByTab,
   parseInviteInput,
@@ -68,6 +69,9 @@ import {
   buildDMConversationId,
   sortMessagesByCreatedAtAsc,
   doesMessageMentionUser,
+  parseYouTubePubSubXml,
+  buildYouTubePubSubXmlSample,
+  buildYouTubeWebhookBotMessage,
 } from './utils/chatLogic';
 import { playNotificationPing } from './utils/soundNotification';
 import {
@@ -123,6 +127,22 @@ const DEFAULT_COMMUNITY_SERVER: ServerItem = {
 };
 
 const DEFAULT_COMMUNITY_CHANNELS: ChannelItem[] = [
+  {
+    id: 'chan_announcements',
+    serverId: 'srv_wapper_community',
+    name: '📢-announcements',
+    type: 'text',
+    category: 'System & Stream Alerts',
+    topic: 'Automatic YouTube Upload & Live Stream Notification Bot (Google PubSubHubbub RSS)',
+  },
+  {
+    id: 'chan_stream_alerts',
+    serverId: 'srv_wapper_community',
+    name: '🚀-stream-alerts',
+    type: 'text',
+    category: 'System & Stream Alerts',
+    topic: 'Real-time 🔴 GO LIVE ALERT & 🆕 NEW VIDEO UPLOAD notifications from Wapper Bot',
+  },
   {
     id: 'chan_general',
     serverId: 'srv_wapper_community',
@@ -182,7 +202,11 @@ function loadInitialChannels(): ChannelItem[] {
     if (raw) {
       const parsed = JSON.parse(raw) as ChannelItem[];
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+        const existingIds = new Set(parsed.map((c) => c.id));
+        const missingDefaults = DEFAULT_COMMUNITY_CHANNELS.filter(
+          (dc) => !existingIds.has(dc.id)
+        );
+        return [...missingDefaults, ...parsed];
       }
     }
   } catch {
@@ -380,6 +404,9 @@ export default function App() {
             roles: (server.roles || DEFAULT_SERVER_ROLES).slice(0, 30),
             memberRoles: server.memberRoles || {},
             customEmojis: (server.customEmojis || []).slice(0, 100),
+            ...(server.youtubeBotConfig
+              ? { youtubeBotConfig: server.youtubeBotConfig }
+              : {}),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
@@ -394,6 +421,9 @@ export default function App() {
             roles: (server.roles || DEFAULT_SERVER_ROLES).slice(0, 30),
             memberRoles: server.memberRoles || {},
             customEmojis: (server.customEmojis || []).slice(0, 100),
+            ...(server.youtubeBotConfig
+              ? { youtubeBotConfig: server.youtubeBotConfig }
+              : {}),
             updatedAt: serverTimestamp(),
           });
         }
@@ -707,6 +737,9 @@ export default function App() {
                 d.memberRoles && typeof d.memberRoles === 'object'
                   ? (d.memberRoles as Record<string, string[]>)
                   : {},
+              ...(d.youtubeBotConfig && typeof d.youtubeBotConfig === 'object'
+                ? { youtubeBotConfig: d.youtubeBotConfig as YouTubeBotConfig }
+                : {}),
             });
           });
           if (remoteServers.length > 0) {
@@ -773,7 +806,16 @@ export default function App() {
           const otherServerChannels = prev.filter(
             (c) => c.serverId !== cleanServerId
           );
-          return [...otherServerChannels, ...remoteChannels];
+          const remoteIds = new Set(remoteChannels.map((c) => c.id));
+          const missingSystemAnnouncements =
+            cleanServerId === 'srv_wapper_community'
+              ? DEFAULT_COMMUNITY_CHANNELS.filter((dc) => !remoteIds.has(dc.id))
+              : [];
+          return [
+            ...otherServerChannels,
+            ...missingSystemAnnouncements,
+            ...remoteChannels,
+          ];
         });
       },
       (err) => {
@@ -1228,7 +1270,16 @@ export default function App() {
         customEmojis: [],
       };
 
+      const announcementsChanId = `chan_${Date.now()}_announcements`;
       const initialChannels: ChannelItem[] = [
+        {
+          id: announcementsChanId,
+          serverId,
+          name: '📢-announcements',
+          type: 'text',
+          category: 'System & Stream Alerts',
+          topic: 'Automatic YouTube Upload & Live Stream Notification Bot (Google PubSubHubbub RSS)',
+        },
         {
           id: textChanId,
           serverId,
@@ -1760,6 +1811,115 @@ export default function App() {
       );
     },
     [activeServer]
+  );
+
+  // Connect YouTube Upload & Live Stream Notification Bot (Google PubSubHubbub RSS Webhook)
+  const handleConnectYouTubeBot = useCallback(
+    async (
+      config: YouTubeBotConfig,
+      alertType: 'live' | 'upload' = 'live',
+      customXmlPayload?: string
+    ) => {
+      if (!activeServer || !currentUser) return;
+
+      const updatedServer: ServerItem = {
+        ...activeServer,
+        youtubeBotConfig: config,
+      };
+
+      setServers((prev) =>
+        prev.map((s) => (s.id === updatedServer.id ? updatedServer : s))
+      );
+
+      const srvChans = channelsRef.current.filter(
+        (c) => c.serverId === updatedServer.id
+      );
+      await syncServerAndMembershipToFirestore(
+        updatedServer,
+        srvChans,
+        currentUser
+      ).catch(() => {});
+
+      // Parse incoming PubSubHubbub Atom XML payload or build a sample entry
+      const xmlToParse =
+        customXmlPayload ||
+        buildYouTubePubSubXmlSample({
+          videoId: 'jfKfPfyJRdk',
+          channelId: config.channelId,
+          channelName: config.channelName,
+          title:
+            alertType === 'live'
+              ? `${config.channelName} is LIVE on Wapper!`
+              : `New Video Upload from ${config.channelName}`,
+          isLiveStream: alertType === 'live',
+        });
+
+      const parsedEntry = parseYouTubePubSubXml(xmlToParse) || {
+        videoId: 'jfKfPfyJRdk',
+        channelId: config.channelId,
+        channelName: config.channelName,
+        title:
+          alertType === 'live'
+            ? `${config.channelName} is LIVE on Wapper!`
+            : `New Video Upload from ${config.channelName}`,
+        videoUrl: 'https://www.youtube.com/watch?v=jfKfPfyJRdk',
+        publishedAt: new Date().toISOString(),
+        isLiveStream: alertType === 'live',
+      };
+
+      const targetChannelId = config.targetChannelId || 'chan_announcements';
+      const botPayload = buildYouTubeWebhookBotMessage(parsedEntry, {
+        serverId: updatedServer.id,
+        channelId: targetChannelId,
+        authorId: currentUser.id,
+      });
+
+      const botMsg: ChatMessageItem = {
+        ...botPayload,
+        reactions: {},
+      };
+
+      setMessagesByChannel((prev) => {
+        const list = prev[targetChannelId] || [];
+        return {
+          ...prev,
+          [targetChannelId]: sortMessagesByCreatedAtAsc([...list, botMsg]),
+        };
+      });
+
+      socket?.emit('send-message', botMsg);
+
+      // Also notify the backend PubSubHubbub webhook listener endpoint
+      fetch('/api/webhooks/youtube-pubsub', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/atom+xml; charset=utf-8',
+          'x-wapper-server-id': updatedServer.id,
+          'x-wapper-channel-id': targetChannelId,
+        },
+        body: xmlToParse,
+      }).catch(() => {});
+
+      persistMessageRecord({
+        id: botMsg.id,
+        channelId: botMsg.channelId,
+        serverId: botMsg.serverId,
+        authorId: botMsg.authorId,
+        authorName: botMsg.authorName,
+        authorRoleColor: botMsg.authorRoleColor,
+        content: botMsg.content,
+        isBot: true,
+        botName: botMsg.botName,
+        botEmbed: botMsg.botEmbed,
+        createdAt: botMsg.createdAt,
+      }).catch(() => {});
+
+      // Switch to the target announcements channel so the rich embed alert is visible immediately
+      setIsDMMode(false);
+      setIsFriendsDashboardActive(false);
+      setActiveChannelId(targetChannelId);
+    },
+    [activeServer, currentUser, socket, syncServerAndMembershipToFirestore]
   );
 
   const handleToggleMute = useCallback(() => {
@@ -2475,6 +2635,7 @@ export default function App() {
         memberRoles={activeServerMemberRoles}
         members={allServerMembers}
         customEmojis={customEmojis}
+        channels={channels.filter((c) => c.serverId === activeServerId)}
         canManageRoles={canManageRoles}
         canManageEmojis={canManageEmojis}
         canKickMembers={canKickMembers}
@@ -2485,6 +2646,7 @@ export default function App() {
         onCreateCustomEmoji={handleCreateCustomEmoji}
         onDeleteCustomEmoji={handleDeleteCustomEmoji}
         onDeleteServer={handleDeleteServer}
+        onConnectYouTubeBot={handleConnectYouTubeBot}
       />
 
       {/* What's New Changelog Modal (By Founder & Dev Mayank Raj) */}

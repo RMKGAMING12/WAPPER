@@ -25,6 +25,10 @@ import {
   filterMentionCandidates,
   injectMentionIntoInput,
   doesMessageMentionUser,
+  normalizeYouTubeChannelId,
+  parseYouTubePubSubXml,
+  buildYouTubePubSubXmlSample,
+  buildYouTubeWebhookBotMessage,
   DEFAULT_SERVER_ROLES,
   HydratedFriendItem,
 } from './chatLogic';
@@ -59,8 +63,10 @@ test('validateEmojiName enforces length and alphanumeric/underscore rules', () =
   assert.equal(validRes.normalized, 'party_parrot_99');
 });
 
-test('sanitizeChannelName normalizes text channels to kebab-case and preserves voice channel casing', () => {
+test('sanitizeChannelName normalizes text channels to kebab-case, preserves emojis, and preserves voice channel casing', () => {
   assert.equal(sanitizeChannelName('  General Discussion!! ', 'text'), 'general-discussion');
+  assert.equal(sanitizeChannelName('📢-announcements', 'text'), '📢-announcements');
+  assert.equal(sanitizeChannelName('🚀-stream-alerts', 'text'), '🚀-stream-alerts');
   assert.equal(sanitizeChannelName('  Lobby Voice 1 ', 'voice'), 'Lobby Voice 1');
 });
 
@@ -431,4 +437,66 @@ test('infrastructure and architecture panel access is strictly restricted to whi
   assert.equal(isFounderEmail('mayankraj.mfp99@gmail.com'), false);
 });
 
+test('normalizeYouTubeChannelId, parseYouTubePubSubXml, and buildYouTubeWebhookBotMessage handle PubSubHubbub RSS notifications', () => {
+  const validId = normalizeYouTubeChannelId('UC_x5XG1OV2P6uZZ5FSM9Ttw');
+  assert.equal(validId.valid, true);
+  assert.equal(validId.channelId, 'UC_x5XG1OV2P6uZZ5FSM9Ttw');
+  assert.equal(
+    validId.feedUrl,
+    'https://www.youtube.com/xml/feeds/videos.xml?channel_id=UC_x5XG1OV2P6uZZ5FSM9Ttw'
+  );
 
+  const validUrl = normalizeYouTubeChannelId(
+    'https://www.youtube.com/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw/videos'
+  );
+  assert.equal(validUrl.valid, true);
+  assert.equal(validUrl.channelId, 'UC_x5XG1OV2P6uZZ5FSM9Ttw');
+
+  // 1. Live Stream XML Payload -> 🔴 GO LIVE ALERT
+  const liveXml = buildYouTubePubSubXmlSample({
+    videoId: 'jfKfPfyJRdk',
+    channelId: 'UC_x5XG1OV2P6uZZ5FSM9Ttw',
+    channelName: 'Mayank Raj Official',
+    title: 'Building Wapper v2 LIVE Stream',
+    isLiveStream: true,
+  });
+  const parsedLive = parseYouTubePubSubXml(liveXml);
+  assert.ok(parsedLive);
+  assert.equal(parsedLive.videoId, 'jfKfPfyJRdk');
+  assert.equal(parsedLive.channelId, 'UC_x5XG1OV2P6uZZ5FSM9Ttw');
+  assert.equal(parsedLive.channelName, 'Mayank Raj Official');
+  assert.equal(parsedLive.isLiveStream, true);
+
+  const liveBotMsg = buildYouTubeWebhookBotMessage(parsedLive, {
+    serverId: 'srv_wapper_community',
+    channelId: 'chan_announcements',
+    authorId: 'usr_founder',
+  });
+  assert.equal(liveBotMsg.isBot, true);
+  assert.equal(liveBotMsg.botName, 'Wapper Bot');
+  assert.equal(liveBotMsg.botEmbed.embedType, 'youtube_live_alert');
+  assert.equal(liveBotMsg.botEmbed.alertHeader, '🔴 GO LIVE ALERT');
+  assert.equal(liveBotMsg.botEmbed.isLiveStream, true);
+  assert.equal(liveBotMsg.botEmbed.youtubeVideoId, 'jfKfPfyJRdk');
+
+  // 2. Standard Video Upload XML Payload -> 🆕 NEW VIDEO UPLOAD
+  const uploadXml = buildYouTubePubSubXmlSample({
+    videoId: 'dQw4w9WgXcQ',
+    channelId: 'UC_x5XG1OV2P6uZZ5FSM9Ttw',
+    channelName: 'Mayank Raj Official',
+    title: 'Wapper Architecture Deep Dive Tutorial',
+    isLiveStream: false,
+  });
+  const parsedUpload = parseYouTubePubSubXml(uploadXml);
+  assert.ok(parsedUpload);
+  assert.equal(parsedUpload.isLiveStream, false);
+
+  const uploadBotMsg = buildYouTubeWebhookBotMessage(parsedUpload, {
+    serverId: 'srv_wapper_community',
+    channelId: 'chan_announcements',
+    authorId: 'usr_founder',
+  });
+  assert.equal(uploadBotMsg.botEmbed.embedType, 'youtube_upload_alert');
+  assert.equal(uploadBotMsg.botEmbed.alertHeader, '🆕 NEW VIDEO UPLOAD');
+  assert.equal(uploadBotMsg.botEmbed.isLiveStream, false);
+});

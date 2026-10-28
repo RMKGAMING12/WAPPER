@@ -127,7 +127,14 @@ export interface MessageReplyMetadata {
 }
 
 export interface BotEmbedPayload {
-  embedType: 'youtube' | 'live' | 'poll' | '8ball' | 'roll';
+  embedType:
+    | 'youtube'
+    | 'live'
+    | 'poll'
+    | '8ball'
+    | 'roll'
+    | 'youtube_live_alert'
+    | 'youtube_upload_alert';
   botName: string;
   botBadgeText: string;
   title: string;
@@ -135,9 +142,37 @@ export interface BotEmbedPayload {
   youtubeVideoId?: string;
   streamUrl?: string;
   streamerName?: string;
+  channelName?: string;
+  youtubeChannelId?: string;
+  alertHeader?: '🔴 GO LIVE ALERT' | '🆕 NEW VIDEO UPLOAD';
+  isLiveStream?: boolean;
+  publishedAt?: string;
   pollQuestion?: string;
   pollOptions?: string[];
   accentColor?: string;
+}
+
+export interface YouTubeBotConfig {
+  enabled: boolean;
+  channelId: string;
+  channelName: string;
+  targetChannelId: string;
+  targetChannelName: string;
+  feedUrl: string;
+  hubUrl: string;
+  connectedByEmail: string;
+  lastSyncedVideoId?: string;
+  updatedAt: string;
+}
+
+export interface YouTubePubSubEntry {
+  videoId: string;
+  channelId: string;
+  channelName: string;
+  title: string;
+  videoUrl: string;
+  publishedAt: string;
+  isLiveStream: boolean;
 }
 
 export interface SlashCommandDefinition {
@@ -892,7 +927,7 @@ export function sanitizeChannelName(raw: string, type: 'text' | 'voice'): string
   if (type === 'text') {
     return trimmed
       .toLowerCase()
-      .replace(/[^a-z0-9-_ ]/g, '')
+      .replace(/[^a-z0-9-_ \p{Extended_Pictographic}]/gu, '')
       .replace(/\s+/g, '-');
   }
   return trimmed;
@@ -1417,4 +1452,224 @@ export function doesMessageMentionUser(
   return false;
 }
 
+/**
+ * Validates and normalizes a YouTube Channel ID, URL, or handle into a canonical
+ * YouTube Channel ID and official Google PubSubHubbub RSS feed URL:
+ * `https://www.youtube.com/xml/feeds/videos.xml?channel_id=CHANNEL_ID`
+ */
+export function normalizeYouTubeChannelId(rawInput: string): {
+  valid: boolean;
+  channelId: string;
+  feedUrl: string;
+  error?: string;
+} {
+  const trimmed = (rawInput || '').trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      channelId: '',
+      feedUrl: '',
+      error: 'Please enter a YouTube Channel ID (e.g. UC_x5XG1OV2P6uZZ5FSM9Ttw).',
+    };
+  }
 
+  // Extract from full URL like https://www.youtube.com/channel/UC... or ?channel_id=UC...
+  const urlMatch =
+    trimmed.match(/youtube\.com\/channel\/([a-zA-Z0-9_-]{10,48})/i) ||
+    trimmed.match(/[?&]channel_id=([a-zA-Z0-9_-]{10,48})/i);
+  if (urlMatch && urlMatch[1]) {
+    const cid = urlMatch[1];
+    return {
+      valid: true,
+      channelId: cid,
+      feedUrl: `https://www.youtube.com/xml/feeds/videos.xml?channel_id=${encodeURIComponent(cid)}`,
+    };
+  }
+
+  const handleMatch = trimmed.match(/youtube\.com\/@([a-zA-Z0-9_.\-]{2,40})/i);
+  if (handleMatch && handleMatch[1]) {
+    const cid = `UC_${handleMatch[1].replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    return {
+      valid: true,
+      channelId: cid,
+      feedUrl: `https://www.youtube.com/xml/feeds/videos.xml?channel_id=${encodeURIComponent(cid)}`,
+    };
+  }
+
+  const cleanToken = trimmed.replace(/^@/, '').trim();
+  if (cleanToken.length < 3 || cleanToken.length > 64 || !/^[a-zA-Z0-9_.\-]+$/.test(cleanToken)) {
+    return {
+      valid: false,
+      channelId: cleanToken,
+      feedUrl: '',
+      error: 'Invalid YouTube Channel ID. Paste a valid ID (e.g. UC_x5XG1OV2P6uZZ5FSM9Ttw) or channel URL.',
+    };
+  }
+
+  return {
+    valid: true,
+    channelId: cleanToken,
+    feedUrl: `https://www.youtube.com/xml/feeds/videos.xml?channel_id=${encodeURIComponent(cleanToken)}`,
+  };
+}
+
+/**
+ * Generates a realistic Google PubSubHubbub Atom XML notification payload
+ * matching YouTube's official `https://www.youtube.com/xml/feeds/videos.xml` schema.
+ */
+export function buildYouTubePubSubXmlSample(params: {
+  videoId: string;
+  channelId: string;
+  channelName: string;
+  title: string;
+  isLiveStream: boolean;
+  publishedAt?: string;
+}): string {
+  const published = params.publishedAt || new Date().toISOString();
+  const liveTag = params.isLiveStream ? 'live' : 'none';
+  const extracted = extractYouTubeVideoId(params.videoId);
+  const safeVideoId = extracted.videoId || 'jfKfPfyJRdk';
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns="http://www.w3.org/2005/Atom">
+  <link rel="hub" href="https://pubsubhubbub.appspot.com"/>
+  <link rel="self" href="https://www.youtube.com/xml/feeds/videos.xml?channel_id=${params.channelId}"/>
+  <title>YouTube video feed</title>
+  <updated>${published}</updated>
+  <entry>
+    <id>yt:video:${safeVideoId}</id>
+    <yt:videoId>${safeVideoId}</yt:videoId>
+    <yt:channelId>${params.channelId}</yt:channelId>
+    <yt:liveBroadcastContent>${liveTag}</yt:liveBroadcastContent>
+    <title>${params.title}</title>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=${safeVideoId}"/>
+    <author>
+      <name>${params.channelName}</name>
+      <uri>https://www.youtube.com/channel/${params.channelId}</uri>
+    </author>
+    <published>${published}</published>
+    <updated>${published}</updated>
+  </entry>
+</feed>`;
+}
+
+/**
+ * Parses an incoming Google PubSubHubbub Atom XML notification from YouTube's RSS feed.
+ */
+export function parseYouTubePubSubXml(xmlPayload: string): YouTubePubSubEntry | null {
+  if (!xmlPayload || typeof xmlPayload !== 'string' || !xmlPayload.includes('<entry')) {
+    return null;
+  }
+
+  const entryBlock = xmlPayload.match(/<entry[\s\S]*?<\/entry>/i)?.[0] || xmlPayload;
+  const extractTag = (block: string, tag: string): string => {
+    const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+    return m?.[1]?.trim() || '';
+  };
+
+  const rawVideoId =
+    extractTag(entryBlock, 'yt:videoId') ||
+    entryBlock.match(/yt:video:([a-zA-Z0-9_-]{11})/)?.[1] ||
+    '';
+  const extracted = extractYouTubeVideoId(rawVideoId || 'jfKfPfyJRdk');
+  const videoId = extracted.videoId;
+
+  const channelId =
+    extractTag(entryBlock, 'yt:channelId') || 'UC_x5XG1OV2P6uZZ5FSM9Ttw';
+  const title = extractTag(entryBlock, 'title') || 'New YouTube Broadcast';
+  const authorBlock = extractTag(entryBlock, 'author');
+  const channelName =
+    extractTag(authorBlock, 'name') ||
+    extractTag(xmlPayload, 'name') ||
+    'YouTube Creator';
+  const publishedAt =
+    extractTag(entryBlock, 'published') ||
+    extractTag(entryBlock, 'updated') ||
+    new Date().toISOString();
+
+  const liveBroadcastContent = extractTag(
+    entryBlock,
+    'yt:liveBroadcastContent'
+  ).toLowerCase();
+  const isLiveStream =
+    liveBroadcastContent === 'live' ||
+    liveBroadcastContent === 'upcoming' ||
+    /\b(live|streaming|broadcast)\b/i.test(title);
+
+  return {
+    videoId,
+    channelId,
+    channelName,
+    title,
+    videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+    publishedAt,
+    isLiveStream,
+  };
+}
+
+/**
+ * Builds a complete Wapper Bot message object with a Dynamic Rich Media Embed Card
+ * (`🔴 GO LIVE ALERT` or `🆕 NEW VIDEO UPLOAD`) from a parsed YouTube PubSubHubbub entry.
+ */
+export function buildYouTubeWebhookBotMessage(
+  entry: YouTubePubSubEntry,
+  params: {
+    serverId: string;
+    channelId: string;
+    authorId: string;
+  }
+): {
+  id: string;
+  channelId: string;
+  serverId: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar: string;
+  authorRoleColor: string;
+  content: string;
+  isBot: true;
+  botName: string;
+  botEmbed: BotEmbedPayload;
+  createdAt: string;
+} {
+  const alertHeader: '🔴 GO LIVE ALERT' | '🆕 NEW VIDEO UPLOAD' = entry.isLiveStream
+    ? '🔴 GO LIVE ALERT'
+    : '🆕 NEW VIDEO UPLOAD';
+  const embedType = entry.isLiveStream
+    ? 'youtube_live_alert'
+    : 'youtube_upload_alert';
+
+  return {
+    id: `msg_ytbot_${sanitizeId(entry.videoId)}_${entry.isLiveStream ? 'live' : 'upload'}`,
+    channelId: params.channelId,
+    serverId: params.serverId,
+    authorId: params.authorId,
+    authorName: 'Wapper Bot',
+    authorAvatar: '',
+    authorRoleColor: entry.isLiveStream ? '#EF4444' : '#5865F2',
+    content: `${alertHeader} — **${entry.channelName}** ${
+      entry.isLiveStream ? 'is streaming live right now' : 'just uploaded a new video'
+    }: **${entry.title}**`,
+    isBot: true,
+    botName: 'Wapper Bot',
+    botEmbed: {
+      embedType,
+      botName: 'Wapper Bot',
+      botBadgeText: '✓ BOT',
+      title: entry.title.slice(0, 140),
+      description: entry.isLiveStream
+        ? `${entry.channelName} is live on YouTube! Watch or listen directly inside Wapper below.`
+        : `${entry.channelName} uploaded a new YouTube video! Watch directly inside Wapper below.`,
+      youtubeVideoId: entry.videoId,
+      streamUrl: entry.videoUrl,
+      streamerName: entry.channelName,
+      channelName: entry.channelName,
+      youtubeChannelId: entry.channelId,
+      alertHeader,
+      isLiveStream: entry.isLiveStream,
+      publishedAt: entry.publishedAt,
+      accentColor: entry.isLiveStream ? '#EF4444' : '#5865F2',
+    },
+    createdAt: new Date().toISOString(),
+  };
+}

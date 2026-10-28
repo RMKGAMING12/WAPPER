@@ -1005,22 +1005,76 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const renderBotEmbedCard = (msg: ChatMessageItem, embed: BotEmbedPayload) => {
     const borderColor = embed.accentColor || '#5865F2';
+    const isYouTubeAlert =
+      embed.embedType === 'youtube_live_alert' ||
+      embed.embedType === 'youtube_upload_alert' ||
+      Boolean(embed.alertHeader);
+    const isActiveLiveStream =
+      embed.embedType === 'youtube_live_alert' ||
+      embed.embedType === 'live' ||
+      Boolean(embed.isLiveStream);
 
     return (
       <div
-        className="mt-2 max-w-xl rounded-xl bg-[#090D16] border border-slate-800/90 overflow-hidden shadow-lg"
+        data-testid={
+          isYouTubeAlert ? 'youtube-pubsub-alert-card' : 'bot-embed-card'
+        }
+        className={`mt-2 max-w-xl rounded-xl bg-[#090D16] border overflow-hidden transition-all ${
+          isYouTubeAlert
+            ? isActiveLiveStream
+              ? 'border-emerald-500/40 shadow-[0_0_28px_rgba(16,185,129,0.18)]'
+              : 'border-red-500/40 shadow-[0_0_28px_rgba(239,68,68,0.15)]'
+            : 'border-slate-800/90 shadow-lg'
+        }`}
         style={{ borderLeftWidth: '4px', borderLeftColor: borderColor }}
       >
         <div className="p-3.5 space-y-2.5">
+          {/* Top Alert Banner for Automatic YouTube Upload & Live Stream Notifications */}
+          {isYouTubeAlert && (
+            <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/80 flex-wrap">
+              <div className="flex items-center gap-2">
+                {isActiveLiveStream && (
+                  <span
+                    className="relative flex h-2.5 w-2.5 shrink-0"
+                    title="Active Live Stream"
+                    aria-label="Active Live Stream Status Dot"
+                  >
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                  </span>
+                )}
+                <span
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-extrabold tracking-wide ${
+                    isActiveLiveStream
+                      ? 'bg-rose-500/20 border border-rose-500/50 text-rose-200'
+                      : 'bg-red-500/20 border border-red-500/40 text-red-200'
+                  }`}
+                >
+                  {embed.alertHeader ||
+                    (isActiveLiveStream
+                      ? '🔴 GO LIVE ALERT'
+                      : '🆕 NEW VIDEO UPLOAD')}
+                </span>
+              </div>
+
+              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded">
+                PubSubHubbub RSS Push
+              </span>
+            </div>
+          )}
+
           {/* Header Row */}
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2 min-w-0">
-              {embed.embedType === 'live' ? (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/20 border border-rose-500/50 text-rose-300 text-[10px] font-bold animate-pulse">
-                  <Radio className="w-3 h-3 text-rose-400" />
-                  <span>🔴 LIVE NOW</span>
+              {!isYouTubeAlert && embed.embedType === 'live' ? (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-rose-500/20 border border-rose-500/50 text-rose-300 text-[10px] font-bold">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                  </span>
+                  <span>🔴 GO LIVE ALERT</span>
                 </span>
-              ) : embed.embedType === 'youtube' ? (
+              ) : !isYouTubeAlert && embed.embedType === 'youtube' ? (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/20 border border-red-500/40 text-red-300 text-[10px] font-bold">
                   <Music className="w-3 h-3 text-red-400" />
                   <span>YOUTUBE WATCH TOGETHER</span>
@@ -1038,11 +1092,26 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-[11px] text-sky-400 hover:underline shrink-0"
               >
-                <span>Open Source</span>
+                <span>Watch on YouTube</span>
                 <ExternalLink className="w-3 h-3" />
               </a>
             )}
           </div>
+
+          {/* YouTube Channel Metadata Row */}
+          {(embed.channelName || embed.streamerName) && (
+            <div className="flex items-center gap-2 text-xs text-slate-300">
+              <span className="text-slate-400">Channel:</span>
+              <strong className="text-white font-semibold">
+                {embed.channelName || embed.streamerName}
+              </strong>
+              {embed.youtubeChannelId && (
+                <code className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono text-indigo-300">
+                  {embed.youtubeChannelId}
+                </code>
+              )}
+            </div>
+          )}
 
           {embed.description && (
             <p className="text-xs text-slate-300 leading-relaxed">
@@ -1050,7 +1119,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             </p>
           )}
 
-          {/* Responsive YouTube Embed Player for /youtube and /live */}
+          {/* Responsive Interactive YouTube Embed Player */}
           {embed.youtubeVideoId && (
             <div className="space-y-2">
               <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-black border border-slate-800">
@@ -1063,7 +1132,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 />
               </div>
 
-              <div className="flex items-center justify-between gap-2 pt-0.5">
+              <div className="flex items-center justify-between gap-2 pt-0.5 flex-wrap">
                 <button
                   type="button"
                   onClick={() =>
@@ -1073,8 +1142,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       streamUrl:
                         embed.streamUrl ||
                         `https://www.youtube.com/watch?v=${embed.youtubeVideoId}`,
-                      startedBy: embed.streamerName || msg.authorName,
-                      isLive: embed.embedType === 'live',
+                      startedBy:
+                        embed.channelName ||
+                        embed.streamerName ||
+                        msg.authorName,
+                      isLive: isActiveLiveStream,
                     })
                   }
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors cursor-pointer shadow-sm"
@@ -1083,11 +1155,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   <span>🎵 Open in Shared Mini-Player</span>
                 </button>
 
-                {embed.streamerName && (
+                {(embed.channelName || embed.streamerName) && (
                   <span className="text-[11px] text-slate-400">
-                    Queued by{' '}
+                    Broadcast by{' '}
                     <strong className="text-slate-200">
-                      {embed.streamerName}
+                      {embed.channelName || embed.streamerName}
                     </strong>
                   </span>
                 )}

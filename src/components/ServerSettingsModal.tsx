@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Shield,
   Users,
@@ -12,25 +12,33 @@ import {
   UserX,
   Radio,
   ChevronDown,
-  AlertTriangle,
+  Bot,
+  Youtube,
+  Rss,
+  Sparkles,
+  CheckCircle2,
 } from 'lucide-react';
-import { doc, deleteDoc } from 'firebase/firestore';
+import { doc, deleteDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import {
   ServerRole,
   RolePermissionKey,
   WapperProfile,
+  ChannelItem,
+  YouTubeBotConfig,
   isFounderEmail,
   getUserHighestRole,
   validateEmojiName,
   normalizeHexColor,
   sanitizeId,
+  normalizeYouTubeChannelId,
+  buildYouTubePubSubXmlSample,
 } from '../utils/chatLogic';
 import { uploadCustomEmojiAsset } from '../supabaseClient';
 import type { CustomEmojiItem } from './ChatArea';
 import type { ServerItem } from './Sidebar';
 
-export type ServerSettingsTab = 'roles' | 'members' | 'emojis';
+export type ServerSettingsTab = 'roles' | 'members' | 'emojis' | 'integrations';
 
 interface ServerSettingsModalProps {
   isOpen: boolean;
@@ -41,6 +49,7 @@ interface ServerSettingsModalProps {
   memberRoles: Record<string, string[]>;
   members: WapperProfile[];
   customEmojis: CustomEmojiItem[];
+  channels?: ChannelItem[];
   canManageRoles: boolean;
   canManageEmojis: boolean;
   canKickMembers: boolean;
@@ -51,6 +60,11 @@ interface ServerSettingsModalProps {
   onCreateCustomEmoji: (name: string, imageUrl: string) => void;
   onDeleteCustomEmoji: (emojiId: string) => void;
   onDeleteServer?: (serverId: string) => Promise<void> | void;
+  onConnectYouTubeBot?: (
+    config: YouTubeBotConfig,
+    alertType?: 'live' | 'upload',
+    customXmlPayload?: string
+  ) => Promise<void> | void;
 }
 
 const PERMISSION_METADATA: Array<{
@@ -115,6 +129,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   memberRoles,
   members,
   customEmojis,
+  channels = [],
   canManageRoles,
   canManageEmojis,
   canKickMembers,
@@ -125,6 +140,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   onCreateCustomEmoji,
   onDeleteCustomEmoji,
   onDeleteServer,
+  onConnectYouTubeBot,
 }) => {
   const [activeTab, setActiveTab] = useState<ServerSettingsTab>(initialTab);
   const [serverMenuOpen, setServerMenuOpen] = useState(false);
@@ -151,6 +167,53 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   const [emojiUploadError, setEmojiUploadError] = useState('');
   const [uploadingEmoji, setUploadingEmoji] = useState(false);
   const emojiFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Founder-Only YouTube Upload & Live Stream Notification Bot State
+  const textChannels = useMemo(
+    () => channels.filter((c) => c.type === 'text'),
+    [channels]
+  );
+  const defaultAlertChannel = useMemo(() => {
+    return (
+      textChannels.find(
+        (c) =>
+          c.id === 'chan_announcements' ||
+          c.name.includes('announcements') ||
+          c.id === 'chan_stream_alerts' ||
+          c.name.includes('stream-alerts')
+      ) || textChannels[0]
+    );
+  }, [textChannels]);
+
+  const [ytChannelIdInput, setYtChannelIdInput] = useState<string>(
+    server.youtubeBotConfig?.channelId || 'UC_x5XG1OV2P6uZZ5FSM9Ttw'
+  );
+  const [ytChannelNameInput, setYtChannelNameInput] = useState<string>(
+    server.youtubeBotConfig?.channelName || 'Mayank Raj Official'
+  );
+  const [ytTargetChannelId, setYtTargetChannelId] = useState<string>(
+    server.youtubeBotConfig?.targetChannelId ||
+      defaultAlertChannel?.id ||
+      'chan_announcements'
+  );
+  const [ytStreamType, setYtStreamType] = useState<'live' | 'upload'>('live');
+  const [ytSampleTitle, setYtSampleTitle] = useState<string>(
+    'Building Wapper v2 — Zero-Cost P2P WebRTC & PubSubHubbub Stream Bot'
+  );
+  const [ytSampleVideoId, setYtSampleVideoId] = useState<string>('jfKfPfyJRdk');
+  const [ytBotError, setYtBotError] = useState<string>('');
+  const [ytBotSuccess, setYtBotSuccess] = useState<string>('');
+  const [isConnectingBot, setIsConnectingBot] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (server.youtubeBotConfig) {
+      setYtChannelIdInput(server.youtubeBotConfig.channelId);
+      setYtChannelNameInput(server.youtubeBotConfig.channelName);
+      setYtTargetChannelId(server.youtubeBotConfig.targetChannelId);
+    } else if (defaultAlertChannel) {
+      setYtTargetChannelId(defaultAlertChannel.id);
+    }
+  }, [server.youtubeBotConfig, defaultAlertChannel]);
 
   const sortedRoles = useMemo(
     () => [...roles].sort((a, b) => b.position - a.position),
@@ -386,6 +449,24 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
             <Smile className="w-3.5 h-3.5" />
             <span>Emojis ({customEmojis.length})</span>
           </button>
+
+          {/* Strictly Founder-Only Integrations / Bots Tab */}
+          {isUserFounder && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('integrations')}
+              data-testid="integrations-bots-tab-button"
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                activeTab === 'integrations'
+                  ? 'bg-amber-500/25 border border-amber-400/50 text-amber-300'
+                  : 'text-amber-300/80 hover:text-amber-200 hover:bg-amber-500/10 border border-amber-500/20'
+              }`}
+            >
+              <Bot className="w-3.5 h-3.5 text-amber-400" />
+              <span>Integrations / Bots</span>
+              <Crown className="w-3 h-3 text-amber-400" />
+            </button>
+          )}
         </div>
 
         {/* Body Content */}
@@ -789,6 +870,329 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* TAB 4: FOUNDER-ONLY INTEGRATIONS / BOTS (YouTube PubSubHubbub RSS Webhook) */}
+          {activeTab === 'integrations' && isUserFounder && (
+            <div className="space-y-6" data-testid="integrations-bots-panel">
+              <div className="rounded-2xl bg-[#090D16] border border-amber-500/35 p-5 space-y-5 shadow-xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 rounded-2xl bg-rose-600/20 border border-rose-500/40 flex items-center justify-center text-rose-400 shrink-0">
+                      <Youtube className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-sm font-bold text-white">
+                          Automatic YouTube Upload &amp; Live Stream Notification Bot
+                        </h3>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/50 text-amber-300 text-[10px] font-bold">
+                          <Crown className="w-3 h-3 text-amber-400" />
+                          <span>👑 Founder Only</span>
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Connect any YouTube Channel ID to Google&apos;s free PubSubHubbub RSS Webhook system (<code className="font-mono text-indigo-300">https://www.youtube.com/xml/feeds/videos.xml</code>) and automatically push rich interactive alerts into <code className="font-mono text-emerald-300">#📢-announcements</code> or <code className="font-mono text-emerald-300">#🚀-stream-alerts</code>.
+                      </p>
+                    </div>
+                  </div>
+
+                  {server.youtubeBotConfig?.enabled && (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-bold shrink-0">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                      <span>Webhook Connected</span>
+                    </span>
+                  )}
+                </div>
+
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setYtBotError('');
+                    setYtBotSuccess('');
+                    const parsed = normalizeYouTubeChannelId(ytChannelIdInput);
+                    if (!parsed.valid) {
+                      setYtBotError(
+                        parsed.error || 'Please enter a valid YouTube Channel ID.'
+                      );
+                      return;
+                    }
+
+                    const selectedChan =
+                      textChannels.find((c) => c.id === ytTargetChannelId) ||
+                      defaultAlertChannel;
+                    const targetChannelId =
+                      selectedChan?.id || 'chan_announcements';
+                    const targetChannelName =
+                      selectedChan?.name || '📢-announcements';
+                    const cleanChannelName =
+                      ytChannelNameInput.trim() || 'Wapper Creator Channel';
+
+                    const nextConfig: YouTubeBotConfig = {
+                      channelId: parsed.channelId,
+                      channelName: cleanChannelName,
+                      targetChannelId,
+                      targetChannelName,
+                      feedUrl: parsed.feedUrl,
+                      hubUrl: 'https://pubsubhubbub.appspot.com/subscribe',
+                      enabled: true,
+                      connectedByEmail:
+                        currentUser.email ||
+                        auth.currentUser?.email ||
+                        'mayankraj.mfp23@gmail.com',
+                      updatedAt: new Date().toISOString(),
+                    };
+
+                    setIsConnectingBot(true);
+                    try {
+                      // Save directly to server's Firestore config when signed in
+                      if (auth.currentUser && auth.currentUser.emailVerified) {
+                        const cleanServerId = sanitizeId(server.id);
+                        await setDoc(
+                          doc(db, 'servers', cleanServerId),
+                          {
+                            youtubeBotConfig: nextConfig,
+                          },
+                          { merge: true }
+                        ).catch(() => {});
+                      }
+
+                      const xmlPayload = buildYouTubePubSubXmlSample({
+                        videoId: ytSampleVideoId.trim() || 'jfKfPfyJRdk',
+                        channelId: parsed.channelId,
+                        channelName: cleanChannelName,
+                        title:
+                          ytSampleTitle.trim() ||
+                          (ytStreamType === 'live'
+                            ? `${cleanChannelName} is LIVE on Wapper!`
+                            : `New Video Upload from ${cleanChannelName}`),
+                        isLiveStream: ytStreamType === 'live',
+                      });
+
+                      if (onConnectYouTubeBot) {
+                        await onConnectYouTubeBot(
+                          nextConfig,
+                          ytStreamType,
+                          xmlPayload
+                        );
+                      }
+
+                      setYtBotSuccess(
+                        `Connected YouTube Channel "${cleanChannelName}" (${parsed.channelId}) to #${targetChannelName} and dispatched real-time PubSubHubbub notification!`
+                      );
+                    } catch (err: unknown) {
+                      setYtBotError(
+                        err instanceof Error
+                          ? err.message
+                          : 'Failed to connect YouTube Notification Bot.'
+                      );
+                    } finally {
+                      setIsConnectingBot(false);
+                    }
+                  }}
+                  className="space-y-4"
+                >
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label
+                        htmlFor="youtube-channel-id-input"
+                        className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1.5"
+                      >
+                        YouTube Channel ID or URL
+                      </label>
+                      <input
+                        id="youtube-channel-id-input"
+                        type="text"
+                        value={ytChannelIdInput}
+                        onChange={(e) => {
+                          setYtChannelIdInput(e.target.value);
+                          if (ytBotError) setYtBotError('');
+                        }}
+                        placeholder="e.g. UC_x5XG1OV2P6uZZ5FSM9Ttw"
+                        className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="youtube-channel-name-input"
+                        className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1.5"
+                      >
+                        YouTube Channel Display Name
+                      </label>
+                      <input
+                        id="youtube-channel-name-input"
+                        type="text"
+                        value={ytChannelNameInput}
+                        onChange={(e) => setYtChannelNameInput(e.target.value)}
+                        placeholder="e.g. Mayank Raj Official"
+                        maxLength={64}
+                        className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label
+                        htmlFor="youtube-target-channel-select"
+                        className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1.5"
+                      >
+                        Target Announcements / Stream Alerts Channel
+                      </label>
+                      <select
+                        id="youtube-target-channel-select"
+                        value={ytTargetChannelId}
+                        onChange={(e) => setYtTargetChannelId(e.target.value)}
+                        className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                      >
+                        {textChannels.map((ch) => (
+                          <option key={ch.id} value={ch.id}>
+                            #{ch.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <span className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+                        Initial Notification Push Mode
+                      </span>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setYtStreamType('live')}
+                          className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl border text-xs font-bold transition-colors cursor-pointer ${
+                            ytStreamType === 'live'
+                              ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
+                              : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                          <span>🔴 GO LIVE ALERT</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setYtStreamType('upload')}
+                          className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl border text-xs font-bold transition-colors cursor-pointer ${
+                            ytStreamType === 'upload'
+                              ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
+                              : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          <span>🆕 NEW VIDEO UPLOAD</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="sm:col-span-2">
+                      <label
+                        htmlFor="youtube-sample-title-input"
+                        className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1"
+                      >
+                        Stream / Video Title
+                      </label>
+                      <input
+                        id="youtube-sample-title-input"
+                        type="text"
+                        value={ytSampleTitle}
+                        onChange={(e) => setYtSampleTitle(e.target.value)}
+                        placeholder="Stream or video title"
+                        className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="youtube-sample-video-id-input"
+                        className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1"
+                      >
+                        YouTube Video ID
+                      </label>
+                      <input
+                        id="youtube-sample-video-id-input"
+                        type="text"
+                        value={ytSampleVideoId}
+                        onChange={(e) => setYtSampleVideoId(e.target.value)}
+                        placeholder="jfKfPfyJRdk"
+                        className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* PubSubHubbub RSS Feed & Webhook Endpoint Details */}
+                  <div className="rounded-xl bg-slate-950/90 border border-slate-800/90 p-3.5 space-y-2 text-[11px]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                        <Rss className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Google Official PubSubHubbub RSS Feed Topic URL</span>
+                      </span>
+                      <span className="font-mono text-[10px] text-emerald-400">
+                        FREE 0-QUOTA PUSH
+                      </span>
+                    </div>
+                    <div className="font-mono text-slate-400 break-all bg-[#090D16] px-2.5 py-1.5 rounded-lg border border-slate-800">
+                      https://www.youtube.com/xml/feeds/videos.xml?channel_id=
+                      {normalizeYouTubeChannelId(ytChannelIdInput).channelId ||
+                        'UC_x5XG1OV2P6uZZ5FSM9Ttw'}
+                    </div>
+                    <div className="text-slate-400 flex items-center justify-between gap-2 pt-1">
+                      <span>
+                        Webhook Listener Endpoint:{' '}
+                        <code className="font-mono text-indigo-300">
+                          POST /api/webhooks/youtube-pubsub
+                        </code>
+                      </span>
+                      <span>
+                        Bot Identity:{' '}
+                        <strong className="text-white">Wapper Bot ✓ BOT</strong>
+                      </span>
+                    </div>
+                  </div>
+
+                  {ytBotError && (
+                    <div
+                      role="alert"
+                      className="rounded-xl bg-rose-500/15 border border-rose-500/35 px-3.5 py-2.5 text-xs text-rose-300"
+                    >
+                      {ytBotError}
+                    </div>
+                  )}
+
+                  {ytBotSuccess && (
+                    <div
+                      role="status"
+                      className="rounded-xl bg-emerald-500/15 border border-emerald-500/35 px-3.5 py-2.5 text-xs text-emerald-200 flex items-center gap-2"
+                    >
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>{ytBotSuccess}</span>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                    <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>
+                        Saves to Firestore <code className="font-mono text-slate-300">/servers/{server.id}</code> &amp; posts live alert card immediately
+                      </span>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isConnectingBot}
+                      data-testid="connect-youtube-bot-button"
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white shadow-lg shadow-indigo-950/60 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <Bot className="w-4 h-4" />
+                      <span>
+                        {isConnectingBot ? 'Connecting Bot...' : 'Connect Bot'}
+                      </span>
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           )}
         </div>
