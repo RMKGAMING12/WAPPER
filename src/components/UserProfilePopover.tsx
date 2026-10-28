@@ -15,6 +15,7 @@ import {
   normalizeHexColor,
   isFounderEmail,
 } from '../utils/chatLogic';
+import { RichPresenceCard } from './RichPresenceCard';
 import { getLocalProfilesRegistry } from '../authService';
 
 interface UserProfilePopoverProps {
@@ -236,6 +237,13 @@ export const UserProfilePopover: React.FC<UserProfilePopoverProps> = ({
               </div>
               <p className="text-xs font-mono text-slate-400">{profile.uniqueTag}</p>
             </div>
+
+            {/* Active Rich Presence Activity Block */}
+            <RichPresenceCard
+              richPresence={profile.richPresence}
+              variant="popover"
+              accentColor={themeHex}
+            />
 
             {/* Live Broadcast Status Card */}
             {profile.isLive && (

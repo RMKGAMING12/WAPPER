@@ -76,6 +76,24 @@ export interface ServerRole {
   permissions: ServerRolePermissions;
 }
 
+export interface RichPresenceActivity {
+  name: string;
+  details: string;
+  state: string;
+  assetUrl: string;
+  startedAt: number | null;
+  isShowing: boolean;
+}
+
+export interface RichPresenceAssetPreset {
+  id: string;
+  label: string;
+  defaultActivityName: string;
+  defaultDetails: string;
+  defaultState: string;
+  assetUrl: string;
+}
+
 export interface WapperProfile {
   id: string;
   username: string;
@@ -96,6 +114,7 @@ export interface WapperProfile {
   isLive?: boolean;
   liveStreamUrl?: string;
   liveStreamTitle?: string;
+  richPresence?: RichPresenceActivity;
   createdAt: string;
   updatedAt: string;
 }
@@ -795,6 +814,139 @@ export function parseFriendTagInput(rawInput: string): {
   };
 }
 
+export const RICH_PRESENCE_ASSET_PRESETS: RichPresenceAssetPreset[] = [
+  {
+    id: 'valorant',
+    label: 'Valorant (Tactical FPS)',
+    defaultActivityName: 'Playing Valorant',
+    defaultDetails: 'Competitive Match',
+    defaultState: 'In a Lobby (3 of 5)',
+    assetUrl:
+      "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23FF4655'/%3E%3Cpath d='M14 18v15l14 17h10L14 18zm36 0L34 38h10l6-7V18z' fill='%23FFFFFF'/%3E%3C/svg%3E",
+  },
+  {
+    id: 'vscode',
+    label: 'Visual Studio Code',
+    defaultActivityName: 'Coding in VS Code',
+    defaultDetails: 'Editing App.tsx',
+    defaultState: 'Workspace: Wapper v3',
+    assetUrl:
+      "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23007ACC'/%3E%3Cpath d='M44 12L24 30l-9-7-5 3v12l5 3 9-7 20 18 10-5V17l-10-5zm0 29L31 32l13-9v18z' fill='%23FFFFFF'/%3E%3C/svg%3E",
+  },
+  {
+    id: 'minecraft',
+    label: 'Minecraft (Survival)',
+    defaultActivityName: 'Playing Minecraft',
+    defaultDetails: 'Survival Multiplayer',
+    defaultState: 'Exploring the End Dimension',
+    assetUrl:
+      "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2310B981'/%3E%3Crect x='14' y='18' width='12' height='12' fill='%23064E3B'/%3E%3Crect x='38' y='18' width='12' height='12' fill='%23064E3B'/%3E%3Crect x='26' y='30' width='12' height='10' fill='%23064E3B'/%3E%3Crect x='20' y='36' width='24' height='12' fill='%23064E3B'/%3E%3C/svg%3E",
+  },
+  {
+    id: 'spotify',
+    label: 'Spotify Music',
+    defaultActivityName: 'Listening to Spotify',
+    defaultDetails: 'Synthwave & Lo-Fi Beats',
+    defaultState: 'In a Jam Session',
+    assetUrl:
+      "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231DB954'/%3E%3Cpath d='M16 24c11-3 23-2 32 3M19 33c9-2 19-1 26 3M21 42c7-2 14-1 20 2' stroke='%230B0F19' stroke-width='4.5' stroke-linecap='round' fill='none'/%3E%3C/svg%3E",
+  },
+  {
+    id: 'cs2',
+    label: 'Counter-Strike 2',
+    defaultActivityName: 'Playing Counter-Strike 2',
+    defaultDetails: 'Premier Competitive',
+    defaultState: 'Mirage · Score 11-8',
+    assetUrl:
+      "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23F59E0B'/%3E%3Ccircle cx='32' cy='32' r='16' stroke='%230B0F19' stroke-width='4' fill='none'/%3E%3Cpath d='M32 10v10M32 44v10M10 32h10M44 32h10' stroke='%230B0F19' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E",
+  },
+];
+
+export function sanitizeRichPresence(
+  input?: Partial<RichPresenceActivity> | null
+): RichPresenceActivity {
+  const defaultAsset = RICH_PRESENCE_ASSET_PRESETS[0].assetUrl;
+  if (!input || typeof input !== 'object') {
+    return {
+      name: '',
+      details: '',
+      state: '',
+      assetUrl: defaultAsset,
+      startedAt: null,
+      isShowing: false,
+    };
+  }
+
+  const name = typeof input.name === 'string' ? input.name.trim().slice(0, 80) : '';
+  const details =
+    typeof input.details === 'string' ? input.details.trim().slice(0, 128) : '';
+  const state =
+    typeof input.state === 'string' ? input.state.trim().slice(0, 128) : '';
+  const rawAsset =
+    typeof input.assetUrl === 'string' ? input.assetUrl.trim().slice(0, 50000) : '';
+  const assetUrl = rawAsset || defaultAsset;
+
+  const rawStartedAt = input.startedAt;
+  const startedAt =
+    typeof rawStartedAt === 'number' && Number.isFinite(rawStartedAt) && rawStartedAt > 0
+      ? Math.floor(rawStartedAt)
+      : null;
+
+  const isShowing = Boolean(input.isShowing) && name.length > 0;
+
+  return {
+    name,
+    details,
+    state,
+    assetUrl,
+    startedAt,
+    isShowing,
+  };
+}
+
+export function isRichPresenceActive(
+  richPresence?: RichPresenceActivity | null
+): boolean {
+  return Boolean(
+    richPresence &&
+      richPresence.isShowing &&
+      typeof richPresence.name === 'string' &&
+      richPresence.name.trim().length > 0
+  );
+}
+
+/**
+ * Formats the elapsed duration between `startedAt` and `nowMs` into a Discord-style
+ * live timer string such as `"05:14 elapsed"` or `"01:05:14 elapsed"`.
+ */
+export function formatRichPresenceElapsed(
+  startedAt?: number | null,
+  nowMs: number = Date.now()
+): string {
+  if (
+    typeof startedAt !== 'number' ||
+    !Number.isFinite(startedAt) ||
+    startedAt <= 0
+  ) {
+    return '';
+  }
+
+  const totalSeconds = Math.max(0, Math.floor((nowMs - startedAt) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const mm = String(minutes).padStart(2, '0');
+  const ss = String(seconds).padStart(2, '0');
+
+  if (hours > 0) {
+    const hh = String(hours).padStart(2, '0');
+    return `${hh}:${mm}:${ss} elapsed`;
+  }
+
+  return `${mm}:${ss} elapsed`;
+}
+
 export function sanitizeProfileUpdate(input: {
   username?: string;
   avatarUrl?: string;
@@ -804,6 +956,7 @@ export function sanitizeProfileUpdate(input: {
   customStatusText?: string;
   customStatusEmoji?: string;
   profileThemeColor?: string;
+  richPresence?: Partial<RichPresenceActivity> | null;
 }): {
   valid: boolean;
   error?: string;
@@ -816,9 +969,20 @@ export function sanitizeProfileUpdate(input: {
     customStatusText?: string;
     customStatusEmoji?: string;
     profileThemeColor?: string;
+    richPresence?: RichPresenceActivity;
   };
 } {
-  const sanitized: Record<string, string> = {};
+  const sanitized: {
+    username?: string;
+    avatarUrl?: string;
+    bannerUrl?: string;
+    bannerColor?: string;
+    bio?: string;
+    customStatusText?: string;
+    customStatusEmoji?: string;
+    profileThemeColor?: string;
+    richPresence?: RichPresenceActivity;
+  } = {};
 
   if (input.username !== undefined) {
     const cleanName = input.username
@@ -859,6 +1023,9 @@ export function sanitizeProfileUpdate(input: {
   }
   if (input.profileThemeColor !== undefined) {
     sanitized.profileThemeColor = normalizeHexColor(input.profileThemeColor, '#5865F2');
+  }
+  if (input.richPresence !== undefined) {
+    sanitized.richPresence = sanitizeRichPresence(input.richPresence);
   }
 
   return { valid: true, sanitized };

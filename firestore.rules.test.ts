@@ -38,4 +38,9 @@ test('Dirty Dozen Security Invariants in firestore.rules', () => {
 
   // 7. Non-existent document get check (prevents NullPointerError before initial profile creation)
   assert.match(rulesContent, /resource == null \|\| existing\(\)\.uid is string/);
+
+  // 8. Rich Presence object allowed and bounded on /profiles/{userId}
+  assert.match(rulesContent, /'richPresence'/);
+  assert.match(rulesContent, /data\.richPresence is map && data\.richPresence\.size\(\) <= 10/);
 });
+

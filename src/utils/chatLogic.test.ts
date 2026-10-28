@@ -29,6 +29,10 @@ import {
   parseYouTubePubSubXml,
   buildYouTubePubSubXmlSample,
   buildYouTubeWebhookBotMessage,
+  sanitizeRichPresence,
+  isRichPresenceActive,
+  formatRichPresenceElapsed,
+  RICH_PRESENCE_ASSET_PRESETS,
   DEFAULT_SERVER_ROLES,
   HydratedFriendItem,
 } from './chatLogic';
@@ -500,3 +504,47 @@ test('normalizeYouTubeChannelId, parseYouTubePubSubXml, and buildYouTubeWebhookB
   assert.equal(uploadBotMsg.botEmbed.alertHeader, '🆕 NEW VIDEO UPLOAD');
   assert.equal(uploadBotMsg.botEmbed.isLiveStream, false);
 });
+
+test('Custom Web Rich Presence sanitization, active state, and live elapsed timer formatting', () => {
+  // 1. Empty / null input returns disabled rich presence
+  const emptyRp = sanitizeRichPresence(null);
+  assert.equal(emptyRp.isShowing, false);
+  assert.equal(emptyRp.name, '');
+  assert.equal(emptyRp.startedAt, null);
+  assert.equal(isRichPresenceActive(emptyRp), false);
+
+  // 2. Valid Valorant Rich Presence with live timer
+  const startMs = 1_700_000_000_000;
+  const activeRp = sanitizeRichPresence({
+    name: '  Playing Valorant  ',
+    details: '  Competitive Match  ',
+    state: '  In a Lobby 3/5  ',
+    assetUrl: RICH_PRESENCE_ASSET_PRESETS[0].assetUrl,
+    startedAt: startMs,
+    isShowing: true,
+  });
+  assert.equal(activeRp.name, 'Playing Valorant');
+  assert.equal(activeRp.details, 'Competitive Match');
+  assert.equal(activeRp.state, 'In a Lobby 3/5');
+  assert.equal(activeRp.startedAt, startMs);
+  assert.equal(activeRp.isShowing, true);
+  assert.equal(isRichPresenceActive(activeRp), true);
+
+  // 3. Live elapsed timer formatting (MM:SS elapsed and HH:MM:SS elapsed)
+  assert.equal(formatRichPresenceElapsed(null, startMs + 5000), '');
+  assert.equal(formatRichPresenceElapsed(startMs, startMs + 314_000), '05:14 elapsed');
+  assert.equal(
+    formatRichPresenceElapsed(startMs, startMs + (1 * 3600 + 5 * 60 + 14) * 1000),
+    '01:05:14 elapsed'
+  );
+
+  // 4. sanitizeProfileUpdate includes sanitized richPresence
+  const profileCheck = sanitizeProfileUpdate({
+    username: 'Mayank Raj',
+    richPresence: activeRp,
+  });
+  assert.equal(profileCheck.valid, true);
+  assert.equal(profileCheck.sanitized.richPresence?.name, 'Playing Valorant');
+  assert.equal(profileCheck.sanitized.richPresence?.isShowing, true);
+});
+

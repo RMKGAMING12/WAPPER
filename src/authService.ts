@@ -31,9 +31,11 @@ import {
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 import {
   WapperProfile,
+  RichPresenceActivity,
   sanitizeId,
   formatUniqueTag,
   sanitizeProfileUpdate,
+  sanitizeRichPresence,
   normalizeHexColor,
 } from './utils/chatLogic';
 
@@ -135,6 +137,9 @@ async function persistProfileToCloud(profile: WapperProfile): Promise<void> {
       ...(profile.liveStreamTitle !== undefined
         ? { liveStreamTitle: String(profile.liveStreamTitle).slice(0, 140) }
         : {}),
+      ...(profile.richPresence !== undefined
+        ? { richPresence: sanitizeRichPresence(profile.richPresence) }
+        : {}),
       updatedAt: serverTimestamp(),
     };
     try {
@@ -178,6 +183,10 @@ export function mapFirestoreDocToProfile(
     isLive: Boolean(docData.isLive),
     liveStreamUrl: docData.liveStreamUrl ? String(docData.liveStreamUrl) : undefined,
     liveStreamTitle: docData.liveStreamTitle ? String(docData.liveStreamTitle) : undefined,
+    richPresence:
+      docData.richPresence && typeof docData.richPresence === 'object'
+        ? sanitizeRichPresence(docData.richPresence as Partial<RichPresenceActivity>)
+        : undefined,
     createdAt: nowIso,
     updatedAt: nowIso,
   };
@@ -211,7 +220,7 @@ export function subscribeToProfilesDirectory(
   emitMerged();
 
   let unsubFirestore: (() => void) | null = null;
-  if (auth.currentUser && auth.currentUser.emailVerified) {
+  try {
     unsubFirestore = onSnapshot(
       collection(db, 'profiles'),
       (snap) => {
@@ -230,7 +239,7 @@ export function subscribeToProfilesDirectory(
         emitMerged();
       }
     );
-  } else {
+  } catch {
     getDocs(collection(db, 'profiles'))
       .then((snap) => {
         const list: WapperProfile[] = [];
@@ -384,6 +393,12 @@ async function buildAndSyncProfileFromFirebaseUser(
           customStatusEmoji: docData.customStatusEmoji || '',
           profileThemeColor: docData.profileThemeColor || '#5865F2',
           status: 'online',
+          richPresence:
+            docData.richPresence && typeof docData.richPresence === 'object'
+              ? sanitizeRichPresence(
+                  docData.richPresence as Partial<RichPresenceActivity>
+                )
+              : undefined,
           createdAt: nowIso,
           updatedAt: nowIso,
         };
@@ -468,6 +483,7 @@ export async function updateUserProfile(
     isLive?: boolean;
     liveStreamUrl?: string;
     liveStreamTitle?: string;
+    richPresence?: Partial<RichPresenceActivity> | null;
   }
 ): Promise<WapperProfile> {
   const validation = sanitizeProfileUpdate(updates);
@@ -485,6 +501,10 @@ export async function updateUserProfile(
     isLive: updates.isLive ?? currentProfile.isLive,
     liveStreamUrl: updates.liveStreamUrl ?? currentProfile.liveStreamUrl,
     liveStreamTitle: updates.liveStreamTitle ?? currentProfile.liveStreamTitle,
+    richPresence:
+      validation.sanitized.richPresence !== undefined
+        ? validation.sanitized.richPresence
+        : currentProfile.richPresence,
     updatedAt: new Date().toISOString(),
   };
 

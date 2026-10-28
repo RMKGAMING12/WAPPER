@@ -8,14 +8,21 @@ import {
   Check,
   Trash2,
   Image as ImageIcon,
+  Gamepad2,
+  Clock,
+  RotateCcw,
 } from 'lucide-react';
 import {
   WapperProfile,
+  RichPresenceActivity,
+  RICH_PRESENCE_ASSET_PRESETS,
+  sanitizeRichPresence,
   BLUEPRINT_LIMITS,
   normalizeHexColor,
   formatUniqueTag,
 } from '../utils/chatLogic';
 import { uploadProfileMediaAsset } from '../authService';
+import { RichPresenceCard } from './RichPresenceCard';
 
 interface ProfileSettingsModalProps {
   isOpen: boolean;
@@ -30,6 +37,7 @@ interface ProfileSettingsModalProps {
     customStatusText: string;
     customStatusEmoji: string;
     profileThemeColor: string;
+    richPresence: RichPresenceActivity;
   }) => Promise<void>;
 }
 
@@ -81,6 +89,22 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
     profile.profileThemeColor || '#5865F2'
   );
 
+  const [activeTab, setActiveTab] = useState<'profile' | 'rich_presence'>('profile');
+
+  // Rich Presence (Activity Status) form states
+  const initialRp = sanitizeRichPresence(profile.richPresence);
+  const [rpIsShowing, setRpIsShowing] = useState<boolean>(initialRp.isShowing);
+  const [rpName, setRpName] = useState<string>(initialRp.name);
+  const [rpDetails, setRpDetails] = useState<string>(initialRp.details);
+  const [rpState, setRpState] = useState<string>(initialRp.state);
+  const [rpAssetUrl, setRpAssetUrl] = useState<string>(
+    initialRp.assetUrl || RICH_PRESENCE_ASSET_PRESETS[0].assetUrl
+  );
+  const [rpDisplayTimer, setRpDisplayTimer] = useState<boolean>(
+    Boolean(initialRp.startedAt)
+  );
+  const [rpStartedAt, setRpStartedAt] = useState<number | null>(initialRp.startedAt);
+
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -100,6 +124,16 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
       setCustomStatusText(profile.customStatusText || '');
       setCustomStatusEmoji(profile.customStatusEmoji || '');
       setProfileThemeColor(profile.profileThemeColor || '#5865F2');
+
+      const syncedRp = sanitizeRichPresence(profile.richPresence);
+      setRpIsShowing(syncedRp.isShowing);
+      setRpName(syncedRp.name);
+      setRpDetails(syncedRp.details);
+      setRpState(syncedRp.state);
+      setRpAssetUrl(syncedRp.assetUrl || RICH_PRESENCE_ASSET_PRESETS[0].assetUrl);
+      setRpDisplayTimer(Boolean(syncedRp.startedAt));
+      setRpStartedAt(syncedRp.startedAt);
+
       setErrorMsg('');
       setSavedNotice(false);
     }
@@ -140,6 +174,43 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
     }
   };
 
+  const draftRichPresence = sanitizeRichPresence({
+    name: rpName,
+    details: rpDetails,
+    state: rpState,
+    assetUrl: rpAssetUrl,
+    startedAt: rpDisplayTimer ? rpStartedAt : null,
+    isShowing: rpIsShowing && rpName.trim().length > 0,
+  });
+
+  const handleToggleLiveTimer = (checked: boolean) => {
+    setRpDisplayTimer(checked);
+    if (checked) {
+      setRpStartedAt((prev) => prev ?? Date.now());
+    } else {
+      setRpStartedAt(null);
+    }
+  };
+
+  const handleApplyPreset = (presetId: string) => {
+    const preset = RICH_PRESENCE_ASSET_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    setRpAssetUrl(preset.assetUrl);
+    if (!rpName.trim()) {
+      setRpName(preset.defaultActivityName);
+    }
+    if (!rpDetails.trim()) {
+      setRpDetails(preset.defaultDetails);
+    }
+    if (!rpState.trim()) {
+      setRpState(preset.defaultState);
+    }
+    setRpIsShowing(true);
+    if (!rpStartedAt && rpDisplayTimer) {
+      setRpStartedAt(Date.now());
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = username.trim();
@@ -160,6 +231,7 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
         customStatusText,
         customStatusEmoji,
         profileThemeColor: normalizeHexColor(profileThemeColor, '#5865F2'),
+        richPresence: draftRichPresence,
       });
       setSavedNotice(true);
       window.setTimeout(() => {
@@ -196,10 +268,10 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
             <Sparkles className="w-5 h-5 text-indigo-400" />
             <div>
               <h2 id="profile-settings-modal-title" className="text-base font-bold text-white">
-                User Profile &amp; Theme Customization
+                User Profile, Theme &amp; Rich Presence
               </h2>
               <p className="text-xs text-slate-400">
-                100% Free Custom Avatar, Banner, Bio, Status Ticker &amp; Accent Theme
+                100% Free Custom Avatar, Banner, Bio, Status Ticker &amp; Live Activity Rich Presence
               </p>
             </div>
           </div>
@@ -214,6 +286,42 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
           </button>
         </div>
 
+        {/* Navigation Tabs: Profile & Theme vs Activity Status / Rich Presence */}
+        <div className="px-6 pt-3 bg-[#090D16] border-b border-slate-800/90 flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            data-testid="profile-theme-tab-button"
+            onClick={() => setActiveTab('profile')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'profile'
+                ? 'border-indigo-500 text-white bg-indigo-500/10 rounded-t-lg'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <User className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Profile &amp; Theme</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="rich-presence-tab-button"
+            onClick={() => setActiveTab('rich_presence')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'rich_presence'
+                ? 'border-indigo-500 text-white bg-indigo-500/10 rounded-t-lg'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Gamepad2 className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Activity Status / Rich Presence</span>
+            {draftRichPresence.isShowing && (
+              <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-[10px] font-bold text-emerald-300">
+                ACTIVE
+              </span>
+            )}
+          </button>
+        </div>
+
         {/* Body: Side-by-Side Controls + Live Preview Card */}
         <form
           onSubmit={handleSubmit}
@@ -221,7 +329,9 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
         >
           {/* Left Column: Customization Controls (7 cols) */}
           <div className="lg:col-span-7 space-y-6">
-            {/* 1. Display Name */}
+            {activeTab === 'profile' ? (
+              <>
+                {/* 1. Display Name */}
             <div>
               <label
                 htmlFor="profile-username-input"
@@ -480,6 +590,257 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
                 </div>
               </div>
             </div>
+              </>
+            ) : (
+              /* TAB 2: Activity Status / Rich Presence Panel */
+              <div
+                data-testid="rich-presence-settings-panel"
+                className="space-y-5"
+              >
+                {/* Enable / Broadcast Toggle Banner */}
+                <div className="rounded-xl bg-slate-900/90 border border-slate-800 p-4 flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <div className="text-sm font-bold text-white flex items-center gap-2">
+                      <Gamepad2 className="w-4 h-4 text-indigo-400" />
+                      <span>Display Current Activity as Rich Presence</span>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      Broadcast your custom game, coding IDE, or live activity card in real time to server members and friends.
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input
+                      type="checkbox"
+                      data-testid="rich-presence-enable-toggle"
+                      checked={rpIsShowing}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setRpIsShowing(next);
+                        if (next && !rpName.trim()) {
+                          setRpName('Playing Valorant');
+                        }
+                      }}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500" />
+                  </label>
+                </div>
+
+                {/* Quick Game / App Icon Badge Preset Picker */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label
+                      htmlFor="rich-presence-preset-select"
+                      className="block text-xs font-semibold uppercase tracking-wider text-slate-300"
+                    >
+                      Game / Activity Icon Badge Preset
+                    </label>
+                    <button
+                      type="button"
+                      data-testid="rich-presence-clear-button"
+                      onClick={() => {
+                        setRpIsShowing(false);
+                        setRpName('');
+                        setRpDetails('');
+                        setRpState('');
+                        setRpDisplayTimer(false);
+                        setRpStartedAt(null);
+                      }}
+                      className="text-xs text-rose-400 hover:text-rose-300 transition-colors cursor-pointer"
+                    >
+                      Clear Activity
+                    </button>
+                  </div>
+
+                  <select
+                    id="rich-presence-preset-select"
+                    data-testid="rich-presence-preset-select"
+                    value={
+                      RICH_PRESENCE_ASSET_PRESETS.find((p) => p.assetUrl === rpAssetUrl)?.id ||
+                      'custom'
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val !== 'custom') {
+                        handleApplyPreset(val);
+                      }
+                    }}
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    {RICH_PRESENCE_ASSET_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label} — ({preset.defaultActivityName})
+                      </option>
+                    ))}
+                    <option value="custom">Custom Asset Image URL</option>
+                  </select>
+
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {RICH_PRESENCE_ASSET_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => {
+                          setRpAssetUrl(preset.assetUrl);
+                          setRpName(preset.defaultActivityName);
+                          setRpDetails(preset.defaultDetails);
+                          setRpState(preset.defaultState);
+                          setRpIsShowing(true);
+                          if (rpDisplayTimer && !rpStartedAt) {
+                            setRpStartedAt(Date.now());
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] font-medium text-slate-200 transition-colors cursor-pointer"
+                      >
+                        <img
+                          src={preset.assetUrl}
+                          alt={preset.label}
+                          className="w-4 h-4 rounded object-cover"
+                        />
+                        <span>{preset.label.split(' ')[0]}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Activity Name Input */}
+                <div>
+                  <label
+                    htmlFor="rich-presence-name-input"
+                    className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5"
+                  >
+                    Activity Name
+                  </label>
+                  <input
+                    id="rich-presence-name-input"
+                    data-testid="rich-presence-name-input"
+                    type="text"
+                    value={rpName}
+                    onChange={(e) => {
+                      setRpName(e.target.value);
+                      if (e.target.value.trim().length > 0 && !rpIsShowing) {
+                        setRpIsShowing(true);
+                      }
+                    }}
+                    maxLength={80}
+                    placeholder="e.g., Playing Valorant"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                {/* Details Input */}
+                <div>
+                  <label
+                    htmlFor="rich-presence-details-input"
+                    className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5"
+                  >
+                    Details
+                  </label>
+                  <input
+                    id="rich-presence-details-input"
+                    data-testid="rich-presence-details-input"
+                    type="text"
+                    value={rpDetails}
+                    onChange={(e) => setRpDetails(e.target.value)}
+                    maxLength={128}
+                    placeholder="e.g., Competitive Match"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                {/* State Input */}
+                <div>
+                  <label
+                    htmlFor="rich-presence-state-input"
+                    className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5"
+                  >
+                    State
+                  </label>
+                  <input
+                    id="rich-presence-state-input"
+                    data-testid="rich-presence-state-input"
+                    type="text"
+                    value={rpState}
+                    onChange={(e) => setRpState(e.target.value)}
+                    maxLength={128}
+                    placeholder="e.g., In a Lobby 3/5"
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                {/* Asset URL Input */}
+                <div>
+                  <label
+                    htmlFor="rich-presence-asset-url-input"
+                    className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5"
+                  >
+                    Asset URL (Game / Activity Icon Badge)
+                  </label>
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center shrink-0 overflow-hidden">
+                      {rpAssetUrl ? (
+                        <img
+                          src={rpAssetUrl}
+                          alt="Activity Asset Preview"
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <Gamepad2 className="w-5 h-5 text-indigo-400" />
+                      )}
+                    </div>
+                    <input
+                      id="rich-presence-asset-url-input"
+                      data-testid="rich-presence-asset-url-input"
+                      type="text"
+                      value={rpAssetUrl}
+                      onChange={(e) => setRpAssetUrl(e.target.value)}
+                      placeholder="https://... or select a preset badge above"
+                      className="flex-1 rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono"
+                    />
+                  </div>
+                </div>
+
+                {/* Display Live Timer Checkbox Toggle */}
+                <div className="rounded-xl bg-slate-900/80 border border-slate-800 p-3.5 flex items-center justify-between gap-3">
+                  <label
+                    htmlFor="rich-presence-timer-checkbox"
+                    className="flex items-center gap-3 cursor-pointer select-none"
+                  >
+                    <input
+                      id="rich-presence-timer-checkbox"
+                      data-testid="rich-presence-timer-checkbox"
+                      type="checkbox"
+                      checked={rpDisplayTimer}
+                      onChange={(e) => handleToggleLiveTimer(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Display Live Timer</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        Captures activity start timestamp (<code className="font-mono text-indigo-300">startedAt</code>) and renders a real-time ticking <code className="font-mono text-emerald-300">MM:SS elapsed</code> counter.
+                      </div>
+                    </div>
+                  </label>
+
+                  {rpDisplayTimer && (
+                    <button
+                      type="button"
+                      data-testid="rich-presence-reset-timer-button"
+                      onClick={() => setRpStartedAt(Date.now())}
+                      title="Reset elapsed timer to 00:00"
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-medium text-slate-200 transition-colors cursor-pointer shrink-0"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Reset 00:00</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {errorMsg && (
               <p role="alert" className="text-xs font-medium text-rose-400">
@@ -562,7 +923,7 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
                     </div>
                   )}
 
-                  {/* Identity & Bio Card Body */}
+                  {/* Identity, Rich Presence & Bio Card Body */}
                   <div className="rounded-xl bg-[#090D16] border border-slate-800/90 p-3.5 space-y-3">
                     <div>
                       <h3 className="text-base font-bold text-white truncate">
@@ -572,6 +933,13 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
                         {formatUniqueTag(username.trim() || 'WapperUser', profile.discriminator)}
                       </p>
                     </div>
+
+                    {/* Live Rich Presence Activity Block */}
+                    <RichPresenceCard
+                      richPresence={draftRichPresence}
+                      variant="popover"
+                      accentColor={resolvedThemeHex}
+                    />
 
                     <div className="border-t border-slate-800/80 pt-2.5 space-y-1">
                       <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">

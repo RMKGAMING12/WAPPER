@@ -17,6 +17,11 @@
         "customStatusEmoji": { "type": "string", "maxLength": 32 },
         "profileThemeColor": { "type": "string", "minLength": 4, "maxLength": 9 },
         "status": { "type": "string", "enum": ["online", "idle", "dnd", "offline"] },
+        "email": { "type": "string", "maxLength": 160 },
+        "isLive": { "type": "boolean" },
+        "liveStreamUrl": { "type": "string", "maxLength": 2048 },
+        "liveStreamTitle": { "type": "string", "maxLength": 140 },
+        "richPresence": { "type": "object" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

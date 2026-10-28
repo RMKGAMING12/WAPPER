@@ -22,6 +22,7 @@ import {
   filterHydratedFriendsByTab,
   isFounderEmail,
 } from '../utils/chatLogic';
+import { RichPresenceCard } from './RichPresenceCard';
 
 interface FriendsDashboardProps {
   currentUser: WapperProfile;
@@ -458,6 +459,11 @@ export const FriendsDashboard: React.FC<FriendsDashboardProps> = ({
                               ? `${user.customStatusEmoji} ${user.customStatusText}`.trim()
                               : STATUS_TEXT[user.status]}
                           </div>
+                          <RichPresenceCard
+                            richPresence={user.richPresence}
+                            variant="friends"
+                            accentColor={user.profileThemeColor}
+                          />
                         </div>
                       </button>
 
@@ -625,6 +631,13 @@ export const FriendsDashboard: React.FC<FriendsDashboardProps> = ({
                           <div className="text-xs text-slate-400 truncate mt-0.5">
                             {relationshipStatus === 'blocked' ? 'Blocked Account' : statusSummary}
                           </div>
+                          {relationshipStatus !== 'blocked' && (
+                            <RichPresenceCard
+                              richPresence={profile.richPresence}
+                              variant="friends"
+                              accentColor={profile.profileThemeColor}
+                            />
+                          )}
                         </div>
                       </button>
 

@@ -49,10 +49,12 @@ import { UserProfilePopover } from './components/UserProfilePopover';
 import { InviteModal } from './components/InviteModal';
 import { AIStudioModal } from './components/AIStudioModal';
 import { ArchitectureModal } from './components/ArchitectureModal';
+import { RichPresenceCard } from './components/RichPresenceCard';
 import { useWebRTC } from './useWebRTC';
 import {
   ChannelItem,
   WapperProfile,
+  RichPresenceActivity,
   HydratedFriendItem,
   ServerRole,
   MessageReplyMetadata,
@@ -2001,10 +2003,14 @@ export default function App() {
       customStatusText: string;
       customStatusEmoji: string;
       profileThemeColor: string;
+      richPresence?: RichPresenceActivity;
     }) => {
       if (!currentUser) return;
       const updated = await updateUserProfile(currentUser, updates);
       setCurrentUser(updated);
+      setInspectedProfile((prev) =>
+        prev && prev.id === updated.id ? updated : prev
+      );
       socket?.emit('register-user', {
         ...updated,
         isMuted,
@@ -2547,66 +2553,75 @@ export default function App() {
                     <button
                       key={member.id}
                       type="button"
+                      data-testid={`member-sidebar-row-${member.id}`}
                       onClick={() => setInspectedProfile(member)}
-                      className="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-800/60 transition-colors cursor-pointer text-left"
+                      className="w-full flex flex-col gap-1 px-2 py-1.5 rounded-lg hover:bg-slate-800/60 transition-colors cursor-pointer text-left"
                     >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div
-                          className="relative w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0 overflow-hidden"
-                          style={{
-                            backgroundColor: nameColor,
-                          }}
-                        >
-                          {member.avatarUrl ? (
-                            <img
-                              src={member.avatarUrl}
-                              alt={member.username}
-                              referrerPolicy="no-referrer"
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <span>{initials}</span>
-                          )}
-                          <span
-                            className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#0B0F19] ${
-                              STATUS_DOT_COLOR[member.status]
-                            }`}
-                          />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1 flex-wrap">
+                      <div className="w-full flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div
+                            className="relative w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0 overflow-hidden"
+                            style={{
+                              backgroundColor: nameColor,
+                            }}
+                          >
+                            {member.avatarUrl ? (
+                              <img
+                                src={member.avatarUrl}
+                                alt={member.username}
+                                referrerPolicy="no-referrer"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <span>{initials}</span>
+                            )}
                             <span
-                              className="text-xs font-semibold truncate"
-                              style={{ color: nameColor }}
-                            >
-                              {member.username}
+                              className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#0B0F19] ${
+                                STATUS_DOT_COLOR[member.status]
+                              }`}
+                            />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <span
+                                className="text-xs font-semibold truncate"
+                                style={{ color: nameColor }}
+                              >
+                                {member.username}
+                              </span>
+                              {memberIsFounder && (
+                                <span title="👑 Founder & Dev" className="inline-flex">
+                                  <Crown className="w-3 h-3 text-amber-400 shrink-0" />
+                                </span>
+                              )}
+                              {member.isLive && (
+                                <span className="px-1 py-0.2 rounded bg-rose-500/20 border border-rose-500/50 text-rose-300 text-[9px] font-bold animate-pulse">
+                                  🔴 LIVE
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-400 truncate">
+                              {statusTicker}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 text-slate-400 shrink-0">
+                          {member.activeVoiceChannelId && (
+                            <span title="In P2P Voice Channel" className="inline-flex">
+                              <Radio className="w-3.5 h-3.5 text-emerald-400" />
                             </span>
-                            {memberIsFounder && (
-                              <span title="👑 Founder & Dev" className="inline-flex">
-                                <Crown className="w-3 h-3 text-amber-400 shrink-0" />
-                              </span>
-                            )}
-                            {member.isLive && (
-                              <span className="px-1 py-0.2 rounded bg-rose-500/20 border border-rose-500/50 text-rose-300 text-[9px] font-bold animate-pulse">
-                                🔴 LIVE
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-slate-400 truncate">
-                            {statusTicker}
-                          </div>
+                          )}
+                          {member.isMuted && <MicOff className="w-3.5 h-3.5 text-rose-400" />}
+                          {member.isDeafened && <VolumeX className="w-3.5 h-3.5 text-rose-400" />}
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1 text-slate-400 shrink-0">
-                        {member.activeVoiceChannelId && (
-                          <span title="In P2P Voice Channel" className="inline-flex">
-                            <Radio className="w-3.5 h-3.5 text-emerald-400" />
-                          </span>
-                        )}
-                        {member.isMuted && <MicOff className="w-3.5 h-3.5 text-rose-400" />}
-                        {member.isDeafened && <VolumeX className="w-3.5 h-3.5 text-rose-400" />}
-                      </div>
+                      <RichPresenceCard
+                        richPresence={member.richPresence}
+                        variant="sidebar"
+                        accentColor={nameColor}
+                      />
                     </button>
                   );
                 })}

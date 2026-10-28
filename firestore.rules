@@ -53,6 +53,7 @@ service cloud.firestore {
       data.keys().hasOnly([
         'uid',
         'username',
+        'email',
         'discriminator',
         'uniqueTag',
         'avatarUrl',
@@ -66,12 +67,14 @@ service cloud.firestore {
         'isLive',
         'liveStreamUrl',
         'liveStreamTitle',
+        'richPresence',
         'createdAt',
         'updatedAt'
       ]) &&
       isValidId(data.uid) &&
       data.uid == request.auth.uid &&
       data.username is string && data.username.size() >= 2 && data.username.size() <= 32 &&
+      (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
       data.discriminator is string && data.discriminator.size() == 4 && data.discriminator.matches('^[0-9]{4}$') &&
       data.uniqueTag is string && data.uniqueTag.size() >= 7 && data.uniqueTag.size() <= 40 &&
       data.avatarUrl is string && data.avatarUrl.size() <= 500000 &&
@@ -86,6 +89,7 @@ service cloud.firestore {
       (!('isLive' in data) || data.isLive is bool) &&
       (!('liveStreamUrl' in data) || (data.liveStreamUrl is string && data.liveStreamUrl.size() <= 2048)) &&
       (!('liveStreamTitle' in data) || (data.liveStreamTitle is string && data.liveStreamTitle.size() <= 140)) &&
+      (!('richPresence' in data) || (data.richPresence is map && data.richPresence.size() <= 10)) &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp;
     }
@@ -304,6 +308,7 @@ service cloud.firestore {
         (
           incoming().diff(existing()).affectedKeys().hasOnly([
             'username',
+            'email',
             'discriminator',
             'uniqueTag',
             'avatarUrl',
@@ -317,6 +322,7 @@ service cloud.firestore {
             'isLive',
             'liveStreamUrl',
             'liveStreamTitle',
+            'richPresence',
             'updatedAt'
           ])
         );
