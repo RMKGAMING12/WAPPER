@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Hash,
   Volume2,
@@ -18,15 +18,39 @@ import {
   UserPlus,
   Settings,
   Crown,
+  Trash2,
+  Save,
+  AlertTriangle,
 } from 'lucide-react';
+import {
+  collection,
+  doc,
+  getDocs,
+  updateDoc,
+  deleteDoc,
+} from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import {
   ChannelItem,
   WapperProfile,
   groupChannelsByType,
   sanitizeChannelName,
+  sanitizeId,
   isFounderEmail,
 } from '../utils/chatLogic';
-import { ChannelSettingsModal } from './ChannelSettingsModal';
+
+export const FOUNDER_EMAIL_WHITELIST: readonly string[] = [
+  'mayankraj.mfp23@gmail.com',
+  'mayankraj.mfp26@gmail.com',
+  'mayankraj.mfp29@gmail.com',
+];
+
+export const CHANNEL_CATEGORY_OPTIONS = [
+  'Text Channels',
+  'System & Stream Alerts',
+  'Voice & Video P2P',
+  'Engineering & Dev',
+] as const;
 
 export interface VoiceChannelOccupant {
   socketId: string;
@@ -65,7 +89,10 @@ interface ChannelListProps {
   isSpeaking: boolean;
   onSelectChannel: (channel: ChannelItem) => void;
   onCreateChannel: (name: string, type: 'text' | 'voice', category: string) => void;
-  onUpdateChannel?: (channelId: string, updates: { name: string; topic: string }) => void;
+  onUpdateChannel?: (
+    channelId: string,
+    updates: { name: string; topic: string; category?: string }
+  ) => void;
   onDeleteChannel?: (channelId: string) => void;
   onOpenInviteModal: () => void;
   onOpenServerSettings: () => void;
@@ -128,18 +155,58 @@ export const ChannelList: React.FC<ChannelListProps> = ({
   onGoogleSignOut,
 }) => {
   const [showChannelModal, setShowChannelModal] = useState(false);
-  const [channelToConfigure, setChannelToConfigure] = useState<ChannelItem | null>(null);
+  const [channelToConfigure, setChannelToConfigure] =
+    useState<ChannelItem | null>(null);
   const [newChannelType, setNewChannelType] = useState<'text' | 'voice'>('text');
   const [newChannelName, setNewChannelName] = useState('');
   const [channelError, setChannelError] = useState('');
   const [showStatusMenu, setShowStatusMenu] = useState(false);
 
-  const isServerOwner = Boolean(serverOwnerId && currentUser.id === serverOwnerId);
-  const isFounder = isFounderEmail(currentUser.email);
+  // Channel Settings & Deletion Modal State
+  const [editChannelName, setEditChannelName] = useState('');
+  const [editChannelCategory, setEditChannelCategory] =
+    useState('Text Channels');
+  const [editChannelTopic, setEditChannelTopic] = useState('');
+  const [editChannelError, setEditChannelError] = useState('');
+  const [isSavingChannel, setIsSavingChannel] = useState(false);
+  const [isDeletingChannel, setIsDeletingChannel] = useState(false);
+  const [showDeleteChannelConfirm, setShowDeleteChannelConfirm] =
+    useState(false);
+
+  // Strict Email Founder Verification Whitelist Check
+  const authEmail = (auth.currentUser?.email || currentUser.email || '')
+    .trim()
+    .toLowerCase();
+  const isFounder = FOUNDER_EMAIL_WHITELIST.includes(authEmail);
+  const isServerOwner = Boolean(
+    serverOwnerId &&
+      (currentUser.id === serverOwnerId ||
+        auth.currentUser?.uid === serverOwnerId)
+  );
   const canManageChannelSettings = isServerOwner || isFounder;
 
-  const { textChannels, voiceChannels } = groupChannelsByType(channels, serverId);
-  const activeVoiceChannelObj = channels.find((c) => c.id === activeVoiceChannelId);
+  useEffect(() => {
+    if (channelToConfigure) {
+      setEditChannelName(channelToConfigure.name);
+      setEditChannelCategory(
+        channelToConfigure.category ||
+          (channelToConfigure.type === 'voice'
+            ? 'Voice & Video P2P'
+            : 'Text Channels')
+      );
+      setEditChannelTopic(channelToConfigure.topic || '');
+      setEditChannelError('');
+      setShowDeleteChannelConfirm(false);
+    }
+  }, [channelToConfigure]);
+
+  const { textChannels, voiceChannels } = groupChannelsByType(
+    channels,
+    serverId
+  );
+  const activeVoiceChannelObj = channels.find(
+    (c) => c.id === activeVoiceChannelId
+  );
 
   const openCreateChannelModal = (type: 'text' | 'voice') => {
     setNewChannelType(type);
@@ -164,6 +231,140 @@ export const ChannelList: React.FC<ChannelListProps> = ({
     setShowChannelModal(false);
   };
 
+  const handleSaveChannelConfiguration = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetChannel = channelToConfigure;
+    if (!targetChannel || !canManageChannelSettings) return;
+
+    const cleanName = sanitizeChannelName(
+      editChannelName.trim(),
+      targetChannel.type
+    );
+    if (!cleanName || cleanName.length < 2) {
+      setEditChannelError('Channel name must be at least 2 characters long.');
+      return;
+    }
+
+    const cleanCategory =
+      editChannelCategory.trim().slice(0, 48) ||
+      (targetChannel.type === 'voice'
+        ? 'Voice & Video P2P'
+        : 'Text Channels');
+    const cleanTopic = editChannelTopic.trim().slice(0, 300);
+
+    setIsSavingChannel(true);
+    setEditChannelError('');
+
+    const currentServerId = sanitizeId(
+      targetChannel.serverId || serverId
+    );
+    const channelId = sanitizeId(targetChannel.id);
+
+    try {
+      if (auth.currentUser && auth.currentUser.emailVerified) {
+        await updateDoc(
+          doc(db, 'servers', currentServerId, 'channels', channelId),
+          {
+            name: cleanName,
+            category: cleanCategory,
+            topic: cleanTopic,
+          }
+        );
+      }
+      onUpdateChannel?.(targetChannel.id, {
+        name: cleanName,
+        category: cleanCategory,
+        topic: cleanTopic,
+      });
+      setChannelToConfigure(null);
+    } catch (err) {
+      console.error('Failed to update channel in Firestore:', err);
+      onUpdateChannel?.(targetChannel.id, {
+        name: cleanName,
+        category: cleanCategory,
+        topic: cleanTopic,
+      });
+      setChannelToConfigure(null);
+      try {
+        handleFirestoreError(
+          err,
+          OperationType.WRITE,
+          `servers/${currentServerId}/channels/${channelId}`
+        );
+      } catch {
+        // Structured Firestore error logged
+      }
+    } finally {
+      setIsSavingChannel(false);
+    }
+  };
+
+  const handleConfirmDeleteChannel = async () => {
+    const targetChannel = channelToConfigure;
+    if (!targetChannel || !canManageChannelSettings) return;
+
+    setIsDeletingChannel(true);
+    setEditChannelError('');
+
+    const currentServerId = sanitizeId(
+      targetChannel.serverId || serverId
+    );
+    const channelId = sanitizeId(targetChannel.id);
+
+    try {
+      if (auth.currentUser && auth.currentUser.emailVerified) {
+        // Remove all messages inside the channel's messages subcollection first
+        const messagesColRef = collection(
+          db,
+          'servers',
+          currentServerId,
+          'channels',
+          channelId,
+          'messages'
+        );
+        const messagesSnap = await getDocs(messagesColRef).catch(() => null);
+        if (messagesSnap && !messagesSnap.empty) {
+          for (const msgDoc of messagesSnap.docs) {
+            await deleteDoc(
+              doc(
+                db,
+                'servers',
+                currentServerId,
+                'channels',
+                channelId,
+                'messages',
+                msgDoc.id
+              )
+            ).catch(() => {});
+          }
+        }
+
+        // Execute direct Firestore channel delete call
+        await deleteDoc(
+          doc(db, 'servers', currentServerId, 'channels', channelId)
+        );
+      }
+
+      onDeleteChannel?.(targetChannel.id);
+      setChannelToConfigure(null);
+    } catch (err) {
+      console.error('Failed to delete channel from Firestore:', err);
+      onDeleteChannel?.(targetChannel.id);
+      setChannelToConfigure(null);
+      try {
+        handleFirestoreError(
+          err,
+          OperationType.DELETE,
+          `servers/${currentServerId}/channels/${channelId}`
+        );
+      } catch {
+        // Structured Firestore error logged
+      }
+    } finally {
+      setIsDeletingChannel(false);
+    }
+  };
+
   const userInitials = currentUser.username
     .split(/\s+/)
     .map((w) => w[0])
@@ -171,7 +372,7 @@ export const ChannelList: React.FC<ChannelListProps> = ({
     .slice(0, 2)
     .toUpperCase();
 
-  const currentUserIsFounder = isFounderEmail(currentUser.email);
+  const currentUserIsFounder = isFounderEmail(currentUser.email) || isFounder;
 
   const statusTickerText =
     currentUser.customStatusEmoji || currentUser.customStatusText
@@ -400,7 +601,7 @@ export const ChannelList: React.FC<ChannelListProps> = ({
                             }}
                             title={`Configure #${channel.name}`}
                             aria-label={`Configure #${channel.name}`}
-                            className="absolute right-1.5 p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-700/80 opacity-0 group-hover/chan:opacity-100 transition-opacity cursor-pointer shrink-0 z-10"
+                            className="absolute right-1.5 p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-700/80 opacity-0 group-hover/chan:opacity-100 focus:opacity-100 transition-opacity cursor-pointer shrink-0 z-10"
                           >
                             <Settings className="w-3.5 h-3.5" />
                           </button>
@@ -473,7 +674,7 @@ export const ChannelList: React.FC<ChannelListProps> = ({
                               }}
                               title={`Configure ${channel.name}`}
                               aria-label={`Configure ${channel.name}`}
-                              className="absolute right-1.5 p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-700/80 opacity-0 group-hover/chan:opacity-100 transition-opacity cursor-pointer shrink-0 z-10"
+                              className="absolute right-1.5 p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-700/80 opacity-0 group-hover/chan:opacity-100 focus:opacity-100 transition-opacity cursor-pointer shrink-0 z-10"
                             >
                               <Settings className="w-3.5 h-3.5" />
                             </button>
@@ -832,16 +1033,226 @@ export const ChannelList: React.FC<ChannelListProps> = ({
         </div>
       )}
 
-      {/* Channel Settings & Management Modal */}
-      <ChannelSettingsModal
-        isOpen={!!channelToConfigure}
-        channel={channelToConfigure}
-        currentUser={currentUser}
-        serverOwnerId={serverOwnerId}
-        onClose={() => setChannelToConfigure(null)}
-        onUpdateChannel={onUpdateChannel || (() => {})}
-        onDeleteChannel={onDeleteChannel || (() => {})}
-      />
+      {/* Channel Settings & Deletion Panel Modal */}
+      {channelToConfigure && canManageChannelSettings && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 select-none"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="channel-settings-title"
+        >
+          <div className="w-full max-w-lg rounded-2xl bg-[#0F172A] border border-slate-800 shadow-2xl overflow-hidden flex flex-col">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-800 bg-[#090D16] flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+                  {channelToConfigure.type === 'voice' ? (
+                    <Volume2 className="w-4 h-4" />
+                  ) : (
+                    <Hash className="w-4 h-4" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2
+                      id="channel-settings-title"
+                      className="text-sm font-bold text-white truncate"
+                    >
+                      Channel Settings —{' '}
+                      {channelToConfigure.type === 'text' ? '#' : ''}
+                      {channelToConfigure.name}
+                    </h2>
+                    {isFounder && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-[9px] font-bold text-amber-300">
+                        <Crown className="w-2.5 h-2.5 text-amber-400" />
+                        <span>👑 Founder &amp; Dev</span>
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-400 truncate">
+                    {editChannelCategory} ·{' '}
+                    {channelToConfigure.type === 'voice'
+                      ? 'Voice Channel'
+                      : 'Text Channel'}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setChannelToConfigure(null)}
+                aria-label="Close Channel Settings"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form
+              onSubmit={handleSaveChannelConfiguration}
+              className="p-6 space-y-5"
+            >
+              {editChannelError && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2"
+                >
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                  <span>{editChannelError}</span>
+                </div>
+              )}
+
+              {/* Channel Name Input */}
+              <div>
+                <label
+                  htmlFor="edit-channel-name"
+                  className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider"
+                >
+                  Channel Name
+                </label>
+                <div className="relative flex items-center">
+                  <span className="absolute left-3 text-slate-500 text-sm font-semibold select-none">
+                    {channelToConfigure.type === 'text' ? '#' : '🔊'}
+                  </span>
+                  <input
+                    id="edit-channel-name"
+                    type="text"
+                    value={editChannelName}
+                    onChange={(e) => {
+                      setEditChannelName(e.target.value);
+                      if (editChannelError) setEditChannelError('');
+                    }}
+                    maxLength={64}
+                    required
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 pl-8 pr-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none"
+                    placeholder={
+                      channelToConfigure.type === 'text'
+                        ? 'general'
+                        : 'Voice Lounge'
+                    }
+                  />
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {channelToConfigure.type === 'text'
+                    ? 'Text channel names are automatically formatted with lowercase letters, hyphens, and numbers.'
+                    : 'Voice channel names support spaces and alphanumeric titles.'}
+                </p>
+              </div>
+
+              {/* Channel Metadata / Category State Dropdown */}
+              <div>
+                <label
+                  htmlFor="edit-channel-category"
+                  className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider"
+                >
+                  Channel Metadata Category
+                </label>
+                <select
+                  id="edit-channel-category"
+                  value={editChannelCategory}
+                  onChange={(e) => setEditChannelCategory(e.target.value)}
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 px-3.5 py-2.5 text-xs text-white focus:outline-none cursor-pointer"
+                >
+                  {CHANNEL_CATEGORY_OPTIONS.map((catOption) => (
+                    <option key={catOption} value={catOption}>
+                      {catOption}
+                    </option>
+                  ))}
+                  {!CHANNEL_CATEGORY_OPTIONS.includes(
+                    editChannelCategory as (typeof CHANNEL_CATEGORY_OPTIONS)[number]
+                  ) && (
+                    <option value={editChannelCategory}>
+                      {editChannelCategory}
+                    </option>
+                  )}
+                </select>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Switch channel metadata category across real-time Firestore streams.
+                </p>
+              </div>
+
+              {/* Channel Topic Input */}
+              <div>
+                <label
+                  htmlFor="edit-channel-topic"
+                  className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider"
+                >
+                  Channel Topic
+                </label>
+                <textarea
+                  id="edit-channel-topic"
+                  value={editChannelTopic}
+                  onChange={(e) => setEditChannelTopic(e.target.value)}
+                  maxLength={300}
+                  rows={3}
+                  placeholder="Let everyone know the purpose of this channel..."
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none resize-none leading-relaxed"
+                />
+                <div className="flex justify-between text-[11px] text-slate-500 mt-1">
+                  <span>Shown at the top of the chat area.</span>
+                  <span>{editChannelTopic.length}/300</span>
+                </div>
+              </div>
+
+              {/* Action Buttons & Danger Zone Delete Channel */}
+              <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
+                {!showDeleteChannelConfirm ? (
+                  <button
+                    type="button"
+                    data-testid="delete-channel-button"
+                    onClick={() => setShowDeleteChannelConfirm(true)}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-400 hover:text-white hover:bg-rose-500/20 border border-rose-500/30 transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Channel</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      data-testid="confirm-delete-channel-button"
+                      disabled={isDeletingChannel}
+                      onClick={handleConfirmDeleteChannel}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>
+                        {isDeletingChannel ? 'Deleting...' : 'Confirm Delete'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowDeleteChannelConfirm(false)}
+                      className="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setChannelToConfigure(null)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingChannel}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{isSavingChannel ? 'Saving...' : 'Save Changes'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </>
   );
 };

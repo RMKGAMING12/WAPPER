@@ -202,11 +202,7 @@ function loadInitialChannels(): ChannelItem[] {
     if (raw) {
       const parsed = JSON.parse(raw) as ChannelItem[];
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const existingIds = new Set(parsed.map((c) => c.id));
-        const missingDefaults = DEFAULT_COMMUNITY_CHANNELS.filter(
-          (dc) => !existingIds.has(dc.id)
-        );
-        return [...missingDefaults, ...parsed];
+        return parsed;
       }
     }
   } catch {
@@ -806,16 +802,7 @@ export default function App() {
           const otherServerChannels = prev.filter(
             (c) => c.serverId !== cleanServerId
           );
-          const remoteIds = new Set(remoteChannels.map((c) => c.id));
-          const missingSystemAnnouncements =
-            cleanServerId === 'srv_wapper_community'
-              ? DEFAULT_COMMUNITY_CHANNELS.filter((dc) => !remoteIds.has(dc.id))
-              : [];
-          return [
-            ...otherServerChannels,
-            ...missingSystemAnnouncements,
-            ...remoteChannels,
-          ];
+          return [...otherServerChannels, ...remoteChannels];
         });
       },
       (err) => {
@@ -1358,15 +1345,28 @@ export default function App() {
   );
 
   const handleUpdateChannel = useCallback(
-    async (channelId: string, updates: { name: string; topic: string }) => {
+    async (
+      channelId: string,
+      updates: { name: string; topic: string; category?: string }
+    ) => {
       setChannels((prev) =>
         prev.map((c) =>
           c.id === channelId
-            ? { ...c, name: updates.name, topic: updates.topic }
+            ? {
+                ...c,
+                name: updates.name,
+                topic: updates.topic,
+                category: updates.category || c.category,
+              }
             : c
         )
       );
-      if (activeServer && currentUser) {
+      if (
+        activeServer &&
+        currentUser &&
+        auth.currentUser &&
+        auth.currentUser.emailVerified
+      ) {
         try {
           const cleanServerId = sanitizeId(activeServerId);
           const cleanChanId = sanitizeId(channelId);
@@ -1375,7 +1375,9 @@ export default function App() {
             {
               name: updates.name.slice(0, 64),
               topic: (updates.topic || '').slice(0, 300),
-              updatedAt: serverTimestamp(),
+              ...(updates.category
+                ? { category: updates.category.slice(0, 48) }
+                : {}),
             }
           );
         } catch (err) {
@@ -1389,6 +1391,11 @@ export default function App() {
   const handleDeleteChannel = useCallback(
     async (channelId: string) => {
       setChannels((prev) => prev.filter((c) => c.id !== channelId));
+      setMessagesByChannel((prev) => {
+        const next = { ...prev };
+        delete next[channelId];
+        return next;
+      });
       if (activeChannelId === channelId) {
         const remaining = channelsRef.current.filter(
           (c) => c.serverId === activeServerId && c.id !== channelId
@@ -1397,7 +1404,12 @@ export default function App() {
           setActiveChannelId(remaining[0].id);
         }
       }
-      if (activeServer && currentUser) {
+      if (
+        activeServer &&
+        currentUser &&
+        auth.currentUser &&
+        auth.currentUser.emailVerified
+      ) {
         try {
           const cleanServerId = sanitizeId(activeServerId);
           const cleanChanId = sanitizeId(channelId);
@@ -1414,8 +1426,21 @@ export default function App() {
 
   const handleDeleteServer = useCallback(
     async (serverId: string) => {
+      const removedChannelIds = new Set(
+        channelsRef.current
+          .filter((c) => c.serverId === serverId)
+          .map((c) => c.id)
+      );
+
       setServers((prev) => prev.filter((s) => s.id !== serverId));
       setChannels((prev) => prev.filter((c) => c.serverId !== serverId));
+      setMessagesByChannel((prev) => {
+        const next = { ...prev };
+        for (const chId of Array.from(removedChannelIds)) {
+          delete next[chId];
+        }
+        return next;
+      });
 
       if (activeServerId === serverId) {
         const remainingServers = serversRef.current.filter(
@@ -1438,11 +1463,13 @@ export default function App() {
         }
       }
 
-      try {
-        const cleanServerId = sanitizeId(serverId);
-        await deleteDoc(doc(db, 'servers', cleanServerId));
-      } catch (err) {
-        console.error('[App] Failed to delete server from Firestore:', err);
+      if (auth.currentUser && auth.currentUser.emailVerified) {
+        try {
+          const cleanServerId = sanitizeId(serverId);
+          await deleteDoc(doc(db, 'servers', cleanServerId));
+        } catch (err) {
+          console.error('[App] Failed to delete server from Firestore:', err);
+        }
       }
     },
     [activeServerId]

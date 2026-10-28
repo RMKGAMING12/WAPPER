@@ -460,7 +460,11 @@ service cloud.firestore {
         allow delete: if isSignedIn() &&
           isValidId(serverId) &&
           isValidId(memberId) &&
-          existing().userId == request.auth.uid;
+          (
+            existing().userId == request.auth.uid ||
+            get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid ||
+            isWhitelistedFounder()
+          );
       }
 
       // 4. Server Channels (/servers/{serverId}/channels/{channelId})
@@ -493,7 +497,7 @@ service cloud.firestore {
             get(/databases/$(database)/documents/servers/$(serverId)).data.ownerId == request.auth.uid ||
             isWhitelistedFounder()
           ) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'topic']);
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'topic', 'category']);
 
         allow delete: if isSignedIn() &&
           isValidId(serverId) &&

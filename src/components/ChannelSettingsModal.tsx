@@ -6,18 +6,35 @@ import {
   Trash2,
   Save,
   AlertTriangle,
-  Settings,
-  ShieldCheck,
+  Crown,
 } from 'lucide-react';
-import { doc, updateDoc, deleteDoc } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import {
+  collection,
+  doc,
+  getDocs,
+  updateDoc,
+  deleteDoc,
+} from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import {
   ChannelItem,
   WapperProfile,
-  isFounderEmail,
   sanitizeChannelName,
   sanitizeId,
 } from '../utils/chatLogic';
+
+export const FOUNDER_EMAIL_WHITELIST: readonly string[] = [
+  'mayankraj.mfp23@gmail.com',
+  'mayankraj.mfp26@gmail.com',
+  'mayankraj.mfp29@gmail.com',
+];
+
+export const CHANNEL_CATEGORY_OPTIONS = [
+  'Text Channels',
+  'System & Stream Alerts',
+  'Voice & Video P2P',
+  'Engineering & Dev',
+] as const;
 
 interface ChannelSettingsModalProps {
   isOpen: boolean;
@@ -27,7 +44,7 @@ interface ChannelSettingsModalProps {
   onClose: () => void;
   onUpdateChannel: (
     channelId: string,
-    updates: { name: string; topic: string }
+    updates: { name: string; topic: string; category: string }
   ) => void;
   onDeleteChannel: (channelId: string) => void;
 }
@@ -41,11 +58,19 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({
   onUpdateChannel,
   onDeleteChannel,
 }) => {
-  const isServerOwner = Boolean(serverOwnerId && currentUser.id === serverOwnerId);
-  const isFounder = isFounderEmail(currentUser.email);
+  const authEmail = (auth.currentUser?.email || currentUser.email || '')
+    .trim()
+    .toLowerCase();
+  const isFounder = FOUNDER_EMAIL_WHITELIST.includes(authEmail);
+  const isServerOwner = Boolean(
+    serverOwnerId &&
+      (currentUser.id === serverOwnerId ||
+        auth.currentUser?.uid === serverOwnerId)
+  );
   const canManage = isServerOwner || isFounder;
 
   const [channelName, setChannelName] = useState('');
+  const [channelCategory, setChannelCategory] = useState('Text Channels');
   const [channelTopic, setChannelTopic] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -55,6 +80,10 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({
   useEffect(() => {
     if (channel) {
       setChannelName(channel.name);
+      setChannelCategory(
+        channel.category ||
+          (channel.type === 'voice' ? 'Voice & Video P2P' : 'Text Channels')
+      );
       setChannelTopic(channel.topic || '');
       setErrorMsg('');
       setShowDeleteConfirm(false);
@@ -69,44 +98,66 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({
     e.preventDefault();
     const targetChannel = channel;
     if (!targetChannel) return;
-    const cleanName = sanitizeChannelName(channelName.trim(), targetChannel.type);
+
+    const cleanName = sanitizeChannelName(
+      channelName.trim(),
+      targetChannel.type
+    );
     if (!cleanName || cleanName.length < 2) {
       setErrorMsg('Channel name must be at least 2 characters long.');
       return;
     }
 
+    const cleanCategory =
+      channelCategory.trim().slice(0, 48) ||
+      (targetChannel.type === 'voice' ? 'Voice & Video P2P' : 'Text Channels');
     const cleanTopic = channelTopic.trim().slice(0, 300);
+
     setIsSaving(true);
     setErrorMsg('');
 
     try {
-      const cleanServerId = sanitizeId(targetChannel.serverId);
-      const cleanChanId = sanitizeId(targetChannel.id);
-      const chanRef = doc(db, 'servers', cleanServerId, 'channels', cleanChanId);
+      const currentServerId = sanitizeId(targetChannel.serverId);
+      const channelId = sanitizeId(targetChannel.id);
 
-      await updateDoc(chanRef, {
-        name: cleanName,
-        topic: cleanTopic,
-      });
+      if (auth.currentUser && auth.currentUser.emailVerified) {
+        const chanRef = doc(
+          db,
+          'servers',
+          currentServerId,
+          'channels',
+          channelId
+        );
+        await updateDoc(chanRef, {
+          name: cleanName,
+          category: cleanCategory,
+          topic: cleanTopic,
+        });
+      }
 
       onUpdateChannel(targetChannel.id, {
         name: cleanName,
+        category: cleanCategory,
         topic: cleanTopic,
       });
       onClose();
     } catch (err) {
       console.error('Failed to update channel in Firestore:', err);
-      handleFirestoreError(
-        err,
-        OperationType.WRITE,
-        `servers/${targetChannel.serverId}/channels/${targetChannel.id}`
-      );
-      // Fallback: still update in client memory
       onUpdateChannel(targetChannel.id, {
         name: cleanName,
+        category: cleanCategory,
         topic: cleanTopic,
       });
       onClose();
+      try {
+        handleFirestoreError(
+          err,
+          OperationType.WRITE,
+          `servers/${targetChannel.serverId}/channels/${targetChannel.id}`
+        );
+      } catch {
+        // Structured Firestore error logged
+      }
     } finally {
       setIsSaving(false);
     }
@@ -114,28 +165,63 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({
 
   const handleDelete = async () => {
     const targetChannel = channel;
-    if (!targetChannel) return;
+    if (!targetChannel || !canManage) return;
+
     setIsDeleting(true);
     setErrorMsg('');
 
     try {
-      const cleanServerId = sanitizeId(targetChannel.serverId);
-      const cleanChanId = sanitizeId(targetChannel.id);
-      const chanRef = doc(db, 'servers', cleanServerId, 'channels', cleanChanId);
+      const currentServerId = sanitizeId(targetChannel.serverId);
+      const channelId = sanitizeId(targetChannel.id);
 
-      await deleteDoc(chanRef);
+      if (auth.currentUser && auth.currentUser.emailVerified) {
+        // Delete any messages in the channel's messages subcollection first
+        const messagesColRef = collection(
+          db,
+          'servers',
+          currentServerId,
+          'channels',
+          channelId,
+          'messages'
+        );
+        const messagesSnap = await getDocs(messagesColRef).catch(() => null);
+        if (messagesSnap && !messagesSnap.empty) {
+          for (const msgDoc of messagesSnap.docs) {
+            await deleteDoc(
+              doc(
+                db,
+                'servers',
+                currentServerId,
+                'channels',
+                channelId,
+                'messages',
+                msgDoc.id
+              )
+            ).catch(() => {});
+          }
+        }
+
+        // Direct Firestore channel document delete call
+        await deleteDoc(
+          doc(db, 'servers', currentServerId, 'channels', channelId)
+        );
+      }
+
       onDeleteChannel(targetChannel.id);
       onClose();
     } catch (err) {
       console.error('Failed to delete channel from Firestore:', err);
-      handleFirestoreError(
-        err,
-        OperationType.DELETE,
-        `servers/${targetChannel.serverId}/channels/${targetChannel.id}`
-      );
-      // Fallback: update in client memory
       onDeleteChannel(targetChannel.id);
       onClose();
+      try {
+        handleFirestoreError(
+          err,
+          OperationType.DELETE,
+          `servers/${targetChannel.serverId}/channels/${targetChannel.id}`
+        );
+      } catch {
+        // Structured Firestore error logged
+      }
     } finally {
       setIsDeleting(false);
     }
@@ -165,16 +251,19 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({
                   id="channel-settings-title"
                   className="text-sm font-bold text-white truncate"
                 >
-                  Channel Settings — {channel.type === 'text' ? '#' : ''}{channel.name}
+                  Channel Settings — {channel.type === 'text' ? '#' : ''}
+                  {channel.name}
                 </h2>
                 {isFounder && (
-                  <span className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-[9px] font-bold text-amber-300">
-                    👑 Dev Admin
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-[9px] font-bold text-amber-300">
+                    <Crown className="w-2.5 h-2.5 text-amber-400" />
+                    <span>👑 Founder &amp; Dev</span>
                   </span>
                 )}
               </div>
               <p className="text-[11px] text-slate-400 truncate">
-                {channel.category} · {channel.type === 'voice' ? 'Voice Channel' : 'Text Channel'}
+                {channelCategory} ·{' '}
+                {channel.type === 'voice' ? 'Voice Channel' : 'Text Channel'}
               </p>
             </div>
           </div>
@@ -234,6 +323,36 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({
             </p>
           </div>
 
+          {/* Channel Category / Metadata State Dropdown */}
+          <div>
+            <label
+              htmlFor="edit-channel-category"
+              className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider"
+            >
+              Channel Metadata Category
+            </label>
+            <select
+              id="edit-channel-category"
+              value={channelCategory}
+              onChange={(e) => setChannelCategory(e.target.value)}
+              className="w-full rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 px-3.5 py-2.5 text-xs text-white focus:outline-none cursor-pointer"
+            >
+              {CHANNEL_CATEGORY_OPTIONS.map((catOption) => (
+                <option key={catOption} value={catOption}>
+                  {catOption}
+                </option>
+              ))}
+              {!CHANNEL_CATEGORY_OPTIONS.includes(
+                channelCategory as (typeof CHANNEL_CATEGORY_OPTIONS)[number]
+              ) && (
+                <option value={channelCategory}>{channelCategory}</option>
+              )}
+            </select>
+            <p className="mt-1 text-[11px] text-slate-500">
+              Switch the channel section metadata synchronized across all connected clients.
+            </p>
+          </div>
+
           {/* Channel Topic Field */}
           <div>
             <label
@@ -263,6 +382,7 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({
             {!showDeleteConfirm ? (
               <button
                 type="button"
+                data-testid="delete-channel-button"
                 onClick={() => setShowDeleteConfirm(true)}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-400 hover:text-white hover:bg-rose-500/20 border border-rose-500/30 transition-colors cursor-pointer"
               >
@@ -273,6 +393,7 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  data-testid="confirm-delete-channel-button"
                   disabled={isDeleting}
                   onClick={handleDelete}
                   className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"

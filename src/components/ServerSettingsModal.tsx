@@ -17,9 +17,16 @@ import {
   Rss,
   Sparkles,
   CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
-import { doc, deleteDoc, setDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import {
+  collection,
+  doc,
+  getDocs,
+  deleteDoc,
+  setDoc,
+} from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import {
   ServerRole,
   RolePermissionKey,
@@ -37,6 +44,12 @@ import {
 import { uploadCustomEmojiAsset } from '../supabaseClient';
 import type { CustomEmojiItem } from './ChatArea';
 import type { ServerItem } from './Sidebar';
+
+export const FOUNDER_EMAIL_WHITELIST: readonly string[] = [
+  'mayankraj.mfp23@gmail.com',
+  'mayankraj.mfp26@gmail.com',
+  'mayankraj.mfp29@gmail.com',
+];
 
 export type ServerSettingsTab = 'roles' | 'members' | 'emojis' | 'integrations';
 
@@ -148,12 +161,20 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   const [isDeletingServer, setIsDeletingServer] = useState(false);
   const [deleteServerError, setDeleteServerError] = useState('');
 
+  // Strict Email Founder Verification Whitelist Check
+  const activeSessionEmail = (
+    auth.currentUser?.email ||
+    currentUser.email ||
+    ''
+  )
+    .trim()
+    .toLowerCase();
+  const isUserFounder = FOUNDER_EMAIL_WHITELIST.includes(activeSessionEmail);
   const isServerOwner = Boolean(
-    server.ownerId && currentUser.id === server.ownerId
+    server.ownerId &&
+      (currentUser.id === server.ownerId ||
+        auth.currentUser?.uid === server.ownerId)
   );
-  const isUserFounder =
-    isFounderEmail(currentUser.email) ||
-    isFounderEmail(auth.currentUser?.email);
   const canDeleteServer = isServerOwner || isUserFounder;
 
   const [selectedRoleId, setSelectedRoleId] = useState<string>(
@@ -327,6 +348,120 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
     }
   };
 
+  /**
+   * Executes sequential Firestore deletion of all messages inside each channel's
+   * `messages` subcollection, all documents inside the server's `channels` and
+   * `members` subcollections, and finally deletes the root server document
+   * `doc(db, 'servers', currentServerId)`.
+   */
+  const handlePermanentServerDeletion = async () => {
+    if (!canDeleteServer) return;
+    setIsDeletingServer(true);
+    setDeleteServerError('');
+
+    const currentServerId = sanitizeId(server.id);
+
+    try {
+      if (auth.currentUser && auth.currentUser.emailVerified) {
+        // 1. Collect all channel IDs from both Firestore subcollection and local state
+        const channelIdSet = new Set<string>(
+          channels
+            .filter((c) => c.serverId === server.id)
+            .map((c) => sanitizeId(c.id))
+        );
+
+        const channelsColRef = collection(
+          db,
+          'servers',
+          currentServerId,
+          'channels'
+        );
+        const channelsSnap = await getDocs(channelsColRef).catch(() => null);
+        if (channelsSnap && !channelsSnap.empty) {
+          channelsSnap.forEach((cDoc) => {
+            channelIdSet.add(sanitizeId(cDoc.id));
+          });
+        }
+
+        // 2. Delete all messages inside each channel's `messages` subcollection, then delete the channel document
+        for (const chanId of Array.from(channelIdSet)) {
+          const messagesColRef = collection(
+            db,
+            'servers',
+            currentServerId,
+            'channels',
+            chanId,
+            'messages'
+          );
+          const messagesSnap = await getDocs(messagesColRef).catch(() => null);
+          if (messagesSnap && !messagesSnap.empty) {
+            for (const msgDoc of messagesSnap.docs) {
+              await deleteDoc(
+                doc(
+                  db,
+                  'servers',
+                  currentServerId,
+                  'channels',
+                  chanId,
+                  'messages',
+                  msgDoc.id
+                )
+              ).catch(() => {});
+            }
+          }
+
+          await deleteDoc(
+            doc(db, 'servers', currentServerId, 'channels', chanId)
+          ).catch(() => {});
+        }
+
+        // 3. Delete all documents inside the server's `members` subcollection
+        const membersColRef = collection(
+          db,
+          'servers',
+          currentServerId,
+          'members'
+        );
+        const membersSnap = await getDocs(membersColRef).catch(() => null);
+        if (membersSnap && !membersSnap.empty) {
+          for (const memberDoc of membersSnap.docs) {
+            await deleteDoc(
+              doc(
+                db,
+                'servers',
+                currentServerId,
+                'members',
+                memberDoc.id
+              )
+            ).catch(() => {});
+          }
+        }
+
+        // 4. Permanently delete the root server document
+        await deleteDoc(doc(db, 'servers', currentServerId));
+      }
+
+      await onDeleteServer?.(server.id);
+      setShowDeleteServerConfirm(false);
+      onClose();
+    } catch (err: unknown) {
+      await onDeleteServer?.(server.id);
+      setShowDeleteServerConfirm(false);
+      onClose();
+      try {
+        handleFirestoreError(
+          err,
+          OperationType.DELETE,
+          `servers/${currentServerId}`
+        );
+      } catch {
+        // Structured Firestore error logged
+      }
+    } finally {
+      setIsDeletingServer(false);
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
@@ -410,7 +545,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
         </div>
 
         {/* Navigation Tabs */}
-        <div className="px-6 py-2.5 bg-[#090D16] border-b border-slate-800 flex items-center gap-2 shrink-0">
+        <div className="px-6 py-2.5 bg-[#090D16] border-b border-slate-800 flex items-center gap-2 shrink-0 flex-wrap">
           <button
             type="button"
             onClick={() => setActiveTab('roles')}
@@ -470,7 +605,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
         </div>
 
         {/* Body Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* TAB 1: ROLES & PERMISSIONS */}
           {activeTab === 'roles' && (
             <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
@@ -946,7 +1081,6 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
 
                     setIsConnectingBot(true);
                     try {
-                      // Save directly to server's Firestore config when signed in
                       if (auth.currentUser && auth.currentUser.emailVerified) {
                         const cleanServerId = sanitizeId(server.id);
                         await setDoc(
@@ -1195,11 +1329,54 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
               </div>
             </div>
           )}
+
+          {/* PERMANENT SERVER DELETION DANGER ZONE PANEL (Strictly visible ONLY to Server Owner or Whitelisted Founders) */}
+          {canDeleteServer && (
+            <div
+              data-testid="danger-zone-delete-server-panel"
+              className="rounded-2xl bg-rose-950/20 border border-rose-500/35 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+            >
+              <div className="flex items-start gap-3.5 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 shrink-0 mt-0.5">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-sm font-bold text-rose-300">
+                      Danger Zone — Permanent Server Deletion
+                    </h3>
+                    {isUserFounder && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/50 text-amber-300 text-[10px] font-bold">
+                        <Crown className="w-3 h-3 text-amber-400" />
+                        <span>👑 Founder Verified</span>
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                    Permanently delete <strong className="text-white">{server.name}</strong> (<code className="font-mono text-rose-300">{server.id}</code>). This action sequentially wipes all server channels, messages subcollections, member records, and the root server document from Firestore.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                data-testid="danger-zone-delete-server-button"
+                onClick={() => {
+                  setDeleteServerError('');
+                  setShowDeleteServerConfirm(true);
+                }}
+                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white shadow-lg shadow-rose-950/50 transition-colors cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Delete Server</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Delete Server Confirmation Dialog */}
-      {showDeleteServerConfirm && (
+      {/* Delete Server Confirmation Alert Prompt */}
+      {showDeleteServerConfirm && canDeleteServer && (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
           role="alertdialog"
@@ -1225,8 +1402,12 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Are you sure you want to delete <strong className="text-white">{server.name}</strong>?
-              This will permanently wipe all server channels, roles, and settings from Firestore database.
+              Are you sure you want to permanently delete{' '}
+              <strong className="text-white">{server.name}</strong>? This will
+              sequentially delete all documents inside the server&apos;s{' '}
+              <code className="font-mono text-rose-300">channels</code> and{' '}
+              <code className="font-mono text-rose-300">messages</code>{' '}
+              subcollections, and wipe the root server document from Firestore.
             </p>
 
             {deleteServerError && (
@@ -1249,35 +1430,20 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
               </button>
               <button
                 type="button"
+                data-testid="confirm-delete-server-button"
                 disabled={isDeletingServer}
-                onClick={async () => {
-                  setIsDeletingServer(true);
-                  setDeleteServerError('');
-                  try {
-                    const cleanServerId = sanitizeId(server.id);
-                    await deleteDoc(doc(db, 'servers', cleanServerId));
-                    if (onDeleteServer) {
-                      await onDeleteServer(server.id);
-                    }
-                    onClose();
-                  } catch (err: unknown) {
-                    setDeleteServerError(
-                      err instanceof Error ? err.message : 'Failed to delete server.'
-                    );
-                    setIsDeletingServer(false);
-                  }
-                }}
+                onClick={handlePermanentServerDeletion}
                 className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-2"
               >
                 {isDeletingServer ? (
                   <>
                     <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    <span>Deleting...</span>
+                    <span>Deleting Server...</span>
                   </>
                 ) : (
                   <>
                     <Trash2 className="w-3.5 h-3.5" />
-                    <span>Delete Server</span>
+                    <span>Confirm Delete Server</span>
                   </>
                 )}
               </button>
